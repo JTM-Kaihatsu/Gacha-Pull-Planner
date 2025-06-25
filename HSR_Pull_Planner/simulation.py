@@ -1,0 +1,301 @@
+
+"""simulation.py
+Core gacha‑pull simulation logic for Honkai: Star Rail.
+
+All functions are pure and have no external side‑effects, which
+makes them easy to unit‑test and reuse.
+"""
+
+from typing import Dict, Tuple
+import numpy as np
+import pandas as pd
+
+def character_probability(pity):
+        if pity < 73: return 0.006
+        if pity < 90: return min(1.0, 0.006 + (pity - 72) * 0.05847)
+        return 1.0
+
+def lightcone_probability(pity):
+    if pity < 65: return 0.008
+    if pity < 80: return min(1.0, 0.008 + (pity - 64) * 0.07)
+    return 1.0
+
+
+def simulate_combo_verbose(
+    total_pulls: int,
+    desired_chars: int,
+    desired_lcs: int,
+    start_char_pity: int = 0,
+    start_char_guarantee: bool = False,
+    start_lc_pity: int = 0,
+    start_lc_guarantee: bool = False,
+    full_4star_chars: bool = True,
+    simulate_4star: bool = True
+) -> Tuple[bool, int, float, float, dict]:
+    """
+    Simulates pulls with metadata tracking for verbose analysis.
+
+    Returns:
+        - success (bool)
+        - pulls_used (int)
+        - refunded (float)
+        - leftover (float)
+        - metadata (dict)
+    """
+    remaining = total_pulls
+    used_pulls = 0
+    refunded_pulls = 0.0
+    chars_obtained = 0
+    lcs_obtained = 0
+
+    pity_char, guarantee_char = start_char_pity, start_char_guarantee
+    pity_lc, guarantee_lc = start_lc_pity, start_lc_guarantee
+    pity_4star_char = 0
+    pity_4star_lc = 0
+
+    char_50_50_wins = 0
+    lc_75_25_wins = 0
+    char_50_50_encounters = 0  # Track 50/50 encounters
+    lc_75_25_encounters = 0  # Track 75/25 encounters
+    lost_char_50_50_failure = False
+    pity_char_trigger = 0
+    pity_lc_trigger = 0
+
+    while remaining > 0 and (chars_obtained < desired_chars or lcs_obtained < desired_lcs):
+        while chars_obtained < desired_chars and remaining > 0:
+            remaining -= 1
+            used_pulls += 1
+            pity_char += 1
+            pity_4star_char += 1
+
+            hit_5star = np.random.rand() < character_probability(pity_char)
+
+            if hit_5star:
+                pity_char_trigger = pity_char
+                char_50_50_encounters += 1  # Increment 50/50 encounter
+
+                if guarantee_char or np.random.rand() < 0.5:
+                    chars_obtained += 1
+                    guarantee_char = False
+                    char_50_50_wins += 1
+                else:
+                    guarantee_char = True
+                pity_char = 0
+                pity_4star_char = 0
+                break
+
+            if simulate_4star and (pity_4star_char >= 10 or np.random.rand() < 0.051):
+                pity_4star_char = 0
+                if full_4star_chars:
+                    remaining += 1
+                    refunded_pulls += 1.0
+
+        while lcs_obtained < desired_lcs and remaining > 0:
+            remaining -= 1
+            used_pulls += 1
+            pity_lc += 1
+            pity_4star_lc += 1
+
+            hit_5star = np.random.rand() < lightcone_probability(pity_lc)
+
+            if hit_5star:
+                pity_lc_trigger = pity_lc
+                lc_75_25_encounters += 1  # Increment 75/25 encounter
+
+                if guarantee_lc or np.random.rand() < 0.75:
+                    lcs_obtained += 1
+                    guarantee_lc = False
+                    lc_75_25_wins += 1
+                else:
+                    guarantee_lc = True
+                pity_lc = 0
+                pity_4star_lc = 0
+                break
+
+            if simulate_4star and (pity_4star_lc >= 10 or np.random.rand() < 0.06):
+                pity_4star_lc = 0
+                remaining += 0.4
+                refunded_pulls += 0.4
+
+    success = (chars_obtained >= desired_chars and lcs_obtained >= desired_lcs)
+    pulls_leftover = remaining
+
+    # Capture the final pity values
+    final_pity_char = pity_char # Store final character pity
+    final_pity_lc = pity_lc # Store final light cone pity
+
+
+    if not success and guarantee_char:  # lost 50/50 and ran out
+        lost_char_50_50_failure = True
+
+    meta = {
+        "char_50_50_wins": char_50_50_wins,
+        "lc_75_25_wins": lc_75_25_wins,
+        "pity_char_trigger": pity_char_trigger,
+        "pity_lc_trigger": pity_lc_trigger,
+        "lost_char_50_50_failure": int(lost_char_50_50_failure),
+        "final_pity_char": final_pity_char,
+        "final_pity_lc": final_pity_lc,
+        "char_50_50_encounters": char_50_50_encounters,  # Include 50/50 encounters
+        "lc_75_25_encounters": lc_75_25_encounters      # Include 75/25 encounters
+    }
+
+    return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
+
+
+def run_simulation_verbose(
+    total_pulls,
+    desired_chars,
+    desired_lcs,
+    start_char_pity=0,
+    start_char_guarantee=False,
+    start_lc_pity=0,
+    start_lc_guarantee=False,
+    trials=10000
+):
+    """
+    Verbose Monte Carlo simulation with metadata aggregation and full printed summary.
+
+    Returns:
+        Tuple of:
+        - success_rate (float)
+        - avg_pulls_success (float)
+        - avg_refund_success (float)
+        - avg_left_success (float)
+        - avg_pulls_all (float)
+        - avg_left_all (float)
+        - failures (int)
+        - avg_pulls_fail (float)
+        - avg_refund_fail (float)
+        - avg_left_fail (float)
+        - stats_summary (dict)
+    """
+    successes = 0
+    pulls_used = []
+    pulls_refunded = []
+    pulls_leftover = []
+
+    all_used = []
+    all_refunded = []
+    all_leftover = []
+
+    # Track failure cases for pulls used and refunds
+    fail_pulls = []
+    fail_refunds = []
+    fail_leftover = []
+
+    metadata_logs = []
+
+    for _ in range(trials):
+        success, used, refunded, leftover, meta = simulate_combo_verbose(
+            total_pulls,
+            desired_chars,
+            desired_lcs,
+            start_char_pity,
+            start_char_guarantee,
+            start_lc_pity,
+            start_lc_guarantee
+        )
+
+        all_used.append(used)
+        all_refunded.append(refunded)
+        all_leftover.append(leftover)
+        metadata_logs.append({**meta, "success": success})
+
+        if success:
+            successes += 1
+            pulls_used.append(used)
+            pulls_refunded.append(refunded)
+            pulls_leftover.append(leftover)
+
+        else:
+            fail_pulls.append(used)
+            fail_refunds.append(refunded)
+
+    failures = trials - successes
+    success_rate = successes / trials
+
+    df = pd.DataFrame(metadata_logs)
+
+    # Overall stats
+    avg_pulls_all = np.mean(all_used)
+    avg_left_all = np.mean(all_leftover)
+
+    ### Success stats ###
+
+    # Averages across all successful runs
+    avg_pulls_success = np.mean(pulls_used) if pulls_used else 0
+    avg_refund_success = np.mean(pulls_refunded) if pulls_refunded else 0
+    avg_left_success = np.mean(pulls_leftover) if pulls_leftover else 0
+
+    # Updated: Calculate average pity for char and LC on success using DataFrame
+    avg_pity_char_success = round(df[df.success]["pity_char_trigger"].mean(), 2) if not df[df.success].empty else None
+    avg_pity_lc_success = round(df[df.success]["pity_lc_trigger"].mean(), 2) if not df[df.success].empty else None
+
+    refund_rate_success = round(np.mean(pulls_refunded) / np.mean(pulls_used) if pulls_used else 0, 4)
+
+    # Updated: Correctly calculate 50/50 and 75/25 win rates for successes
+
+    # Sum the char_50_50_encounters and lc_75_25_encounters for successful runs to get accurate totals
+    total_50_50s_encountered_in_successes = df[df.success]["char_50_50_encounters"].sum()
+    total_25_75s_encountered_in_successes = df[df.success]["lc_75_25_encounters"].sum()
+
+    won_50_50_runs_successes = df[(df.success) & (df.char_50_50_wins > 0)]["char_50_50_wins"].sum()
+    won_25_75_runs_successes = df[(df.success) & (df.lc_75_25_wins > 0)]["lc_75_25_wins"].sum()
+
+    successes_char_win_rate = f"{((won_50_50_runs_successes / total_50_50s_encountered_in_successes) if total_50_50s_encountered_in_successes > 0 else np.nan) * 100:.2f}%"
+    successes_lc_win_rate = f"{((won_25_75_runs_successes / total_25_75s_encountered_in_successes) if total_25_75s_encountered_in_successes > 0 else np.nan) * 100:.2f}%"
+
+    # ... (Existing win rate calculations for failures) ...
+
+    ### Failure stats ###
+    # Updated: Directly use fail_pulls list for calculating average pulls on failure
+    avg_pulls_fail = np.mean(fail_pulls) if fail_pulls else 0
+    avg_refund_fail = np.mean(fail_refunds) if fail_refunds else 0
+    avg_left_fail = np.mean(fail_leftover) if fail_leftover else 0
+
+    # Updated: Calculate average pity for char and LC on failure using DataFrame
+    avg_pity_char_failure = round(df[~df.success]["final_pity_char"].mean(), 2) if not df[~df.success].empty else None
+    avg_pity_lc_failure = round(df[~df.success]["final_pity_lc"].mean(), 2) if not df[~df.success].empty else None
+
+    refund_rate_failure = round(np.mean(fail_refunds) / np.mean(fail_pulls) if fail_pulls else 0, 4)
+
+    #Updated: Use .sum() on char_50_50_wins to get total 50/50 encounters in failed runs
+    # Sum the char_50_50_encounters and lc_75_25_encounters for failed runs to get accurate totals
+    total_50_50s_encountered_in_failures = df[~df.success]["char_50_50_encounters"].sum()
+    total_25_75s_encountered_in_failures = df[~df.success]["lc_75_25_encounters"].sum()
+
+    won_50_50_runs_failures = df[(~df.success) & (df.char_50_50_wins > 0)]["char_50_50_wins"].sum()
+    won_25_75_runs_failures = df[(~df.success) & (df.lc_75_25_wins > 0)]["lc_75_25_wins"].sum()
+
+    failure_char_win_rate = f"{((won_50_50_runs_failures / total_50_50s_encountered_in_failures) if total_50_50s_encountered_in_failures > 0 else np.nan) * 100:.2f}%"
+    failure_lc_win_rate = f"{((won_25_75_runs_failures / total_25_75s_encountered_in_failures) if total_25_75s_encountered_in_failures > 0 else np.nan) * 100:.2f}%"
+
+    stats_summary = {
+        # Initial scenario
+        "initial_pulls": total_pulls,
+        "trials": trials,
+        "desired_characters": desired_chars,
+        "desired_lightcones": desired_lcs,
+        "success_rate": f"{success_rate * 100:.2f}%",
+        "start_char_pity": start_char_pity,
+        "start_char_guarantee": start_char_guarantee,
+        "start_lc_pity": start_lc_pity,
+        "start_lc_guarantee": start_lc_guarantee,
+
+        # Stats for successful runs
+        "avg_pity_char": round(df[df.success]["pity_char_trigger"].mean(), 2) if not df[df.success].empty else None,
+        "avg_pity_lc": round(df[df.success]["pity_lc_trigger"].mean(), 2) if not df[df.success].empty else None,
+        "successes_char_win_rate": successes_char_win_rate,
+        "successes_lc_win_rate": successes_lc_win_rate,
+        "avg_leftover_pulls_on_success": round(avg_left_success, 2),
+        "avg_refund_success": round(avg_refund_success,0),
+
+        # Stats for failed runs
+        "failure_char_win_rate": failure_char_win_rate,
+        "failure_lc_win_rate": failure_lc_win_rate,
+        "avg_leftover_pulls_on_failure": round(avg_left_fail, 2),
+        "avg_refund_fail": round(avg_refund_fail,0),
+    }
+
+    return stats_summary
