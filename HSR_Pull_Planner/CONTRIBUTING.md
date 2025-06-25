@@ -114,7 +114,7 @@ See `README.md` for full request/response schema.
 ## Getting Started Recap
 
 ```bash
-git clone <repo>
+git clone HSR_Pull_Planner
 cd hsr_sim_api
 cp .env.example .env  # then add your OpenAI key
 pip install fastapi uvicorn openai numpy python-dotenv
