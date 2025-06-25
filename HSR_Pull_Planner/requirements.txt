@@ -1,0 +1,1 @@
+fastapi uvicorn openai numpy python-dotenv pytest httpx
