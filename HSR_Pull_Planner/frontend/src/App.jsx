@@ -4,6 +4,7 @@ import PityInputs from './components/PityInputs'
 import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
+import PullsChart from './components/PullsChart'
 import './index.css'
 
 const DEFAULT_FORM = {
@@ -125,6 +126,13 @@ export default function App() {
               <StatCard label="Char 50/50 Win Rate" value={stats.successes_char_win_rate} />
               <StatCard label="LC 75/25 Win Rate" value={stats.successes_lc_win_rate} />
             </div>
+
+            {stats.viz_sample?.length > 0 && (
+              <PullsChart
+                vizSample={stats.viz_sample}
+                totalPulls={form.total_pulls}
+              />
+            )}
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
               <summary className="text-sm font-medium text-slate-400 select-none">Failure Stats</summary>
