@@ -61,6 +61,8 @@ def analyze(req: SimRequest):
                 "failure_lc_win_rate": stats["failure_lc_win_rate"],
                 "avg_leftover_pulls_on_failure": stats["avg_leftover_pulls_on_failure"],
                 "avg_refund_fail": stats["avg_refund_fail"],
+                "most_common_failure_state": stats["most_common_failure_state"],
+                "failure_state_distribution": stats["failure_state_distribution"],
             },
         }
     except Exception as exc:

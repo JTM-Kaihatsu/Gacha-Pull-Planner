@@ -1,4 +1,3 @@
-
 """analyzer.py
 Takes simulation statistics and produces a natural‑language summary
 using the OpenAI Chat Completion API.
@@ -45,6 +44,16 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
         "The reader knows how pity works — skip the basics and get to the point."
     )
 
+    most_common = sim_stats.get("most_common_failure_state")
+    if most_common:
+        failure_state_line = (
+            f"Most common failure state: ran out after getting {most_common['chars']} of {sim_stats['desired_characters']} "
+            f"character copies and {most_common['lcs']} of {sim_stats['desired_lightcones']} LCs "
+            f"({most_common['pct']}% of failures)."
+        )
+    else:
+        failure_state_line = "No failure data available."
+
     user_prompt = """
         Goal: {goal_label} — {goal_description}
         Pulls available: {initial_pulls} | Char pity: {start_char_pity} (guarantee: {start_char_guarantee}) | LC pity: {start_lc_pity} (guarantee: {start_lc_guarantee})
@@ -56,15 +65,18 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
         Avg char pity on success: {avg_pity_char} | Avg LC pity on success: {avg_pity_lc}
         Avg leftover pulls — success: {avg_leftover_pulls_on_success} | fail: {avg_leftover_pulls_on_failure}
         Avg refunds — success: {avg_refund_success} | fail: {avg_refund_fail}
+        {failure_state_line}
 
         Write a short, blunt analysis in plain English — 3 to 5 sentences max, no headers, no bullet points.
         Answer exactly these questions in order:
         1. How many 50/50s and 75/25s did the player need to win to succeed, and does the data show they had to get lucky or was it forgiving?
         2. Did they need early pity hits (well before soft pity) to have pulls left over, or was average pity fine?
         3. Did 4-star refunds meaningfully help — i.e. did successful runs get noticeably more value from refunds than failed ones?
-        4. One sentence verdict: is this doable, tight, or a stretch — and if it's tight or a stretch, how many more pulls would make it comfortable?
+        4. Use the most common failure state to explain what "losing" typically looks like for this player — how far did they get before running out?
+        5. One sentence verdict: is this doable, tight, or a stretch — and if tight or a stretch, how many more pulls would make it comfortable?
         Do not use jargon. Write like you're texting a friend who plays the game.
-        """.format(goal_label=goal_label, goal_description=goal_description, **sim_stats)
+        """.format(goal_label=goal_label, goal_description=goal_description,
+                   failure_state_line=failure_state_line, **sim_stats)
 
 
     response = client.chat.completions.create(

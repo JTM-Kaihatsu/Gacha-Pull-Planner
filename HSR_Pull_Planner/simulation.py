@@ -150,6 +150,8 @@ def simulate_combo_verbose(
         "lc_75_25_encounters": lc_75_25_encounters,
         "desired_chars": desired_chars,
         "desired_lcs": desired_lcs,
+        "chars_obtained": chars_obtained,
+        "lcs_obtained": lcs_obtained,
     }
 
     return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
@@ -272,6 +274,28 @@ def run_simulation_verbose(
     desired_chars = sum(p["copies"] for p in strategy if p["banner"] == "char")
     desired_lcs   = sum(p["copies"] for p in strategy if p["banner"] == "lc")
 
+    # Failure state distribution — most common (chars, lcs) combos among failed runs
+    fail_df = df[~df.success]
+    if not fail_df.empty:
+        state_counts = (
+            fail_df.groupby(["chars_obtained", "lcs_obtained"])
+            .size()
+            .reset_index(name="count")
+            .sort_values("count", ascending=False)
+        )
+        top_states = [
+            {
+                "chars": int(row["chars_obtained"]),
+                "lcs": int(row["lcs_obtained"]),
+                "pct": round(row["count"] / failures * 100, 1),
+            }
+            for _, row in state_counts.head(3).iterrows()
+        ]
+        most_common = top_states[0]
+    else:
+        top_states = []
+        most_common = None
+
     stats_summary = {
         # Initial scenario
         "initial_pulls": total_pulls,
@@ -298,6 +322,8 @@ def run_simulation_verbose(
         "failure_lc_win_rate": failure_lc_win_rate,
         "avg_leftover_pulls_on_failure": round(avg_left_fail, 2),
         "avg_refund_fail": round(avg_refund_fail,0),
+        "most_common_failure_state": most_common,
+        "failure_state_distribution": top_states,
     }
 
     return stats_summary
