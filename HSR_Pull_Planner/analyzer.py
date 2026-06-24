@@ -65,7 +65,6 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
 
     correlation_lines = f"""
         Factor breakdown (counts out of {s} successes / {f} failures):
-        - Above-average 4★ refunds: {fmt(cs.get('above_avg_refunds_in_successes'), s)} successes | {fmt(cs.get('above_avg_refunds_in_failures'), f)} failures (avg refunds overall: {cs.get('overall_avg_refunds', '?')})
         - Early char pity hit (< pull {cs.get('early_pity_threshold', 70)}): {fmt(cs.get('early_char_pity_in_successes'), s)} successes | {fmt(cs.get('early_char_pity_in_failures'), f)} failures
         - Won all needed char 50/50s: {fmt(cs.get('all_5050s_won_in_successes'), s)} successes | {fmt(cs.get('all_5050s_won_in_failures'), f)} failures
         - Won all needed LC 75/25s: {fmt(cs.get('all_lc_75s_won_in_successes'), s)} successes | {fmt(cs.get('all_lc_75s_won_in_failures'), f)} failures
@@ -85,13 +84,12 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
         {failure_state_line}
         {correlation_lines}
 
-        Write a short, blunt analysis in plain English — 4 to 6 sentences max, no headers, no bullet points.
+        Write a short, blunt analysis in plain English — 3 to 5 sentences max, no headers, no bullet points.
         Answer exactly these questions in order:
         1. How many 50/50s and 75/25s did the player need to win, and do the counts show they had to win most/all of them or was losing one survivable?
         2. Did early pity hits matter — were they noticeably more common in successful runs vs failed ones?
-        3. Did above-average 4★ refunds meaningfully separate winners from losers, or were refunds roughly equally distributed? Use the actual counts to justify your answer — if the split is close, say so plainly.
-        4. Use the most common failure state to describe what losing typically looks like.
-        5. One sentence verdict: doable, tight, or a stretch — and if tight or a stretch, how many more pulls would help?
+        3. Use the most common failure state to describe what losing typically looks like.
+        4. One sentence verdict: doable, tight, or a stretch — and if tight or a stretch, how many more pulls would help?
         Do not use jargon. Write like you're texting a friend who plays the game.
         """.format(goal_label=goal_label, goal_description=goal_description,
                    failure_state_line=failure_state_line,
