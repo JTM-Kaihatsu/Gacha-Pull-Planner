@@ -6,7 +6,7 @@ using the OpenAI Chat Completion API.
 from typing import Dict
 import openai
 from openai import OpenAI
-from config import get_openai_api_key
+from config import get_openai_api_key, get_model
 
 
 
@@ -32,10 +32,10 @@ def describe_goal(sim_stats):
 
 
 
-def analyze_sim_result(sim_stats, trials=50000):
+def analyze_sim_result(sim_stats, trials=50000, model: str = None):
 
-    # Establish OpenAI connection
     client = OpenAI(api_key=get_openai_api_key())
+    model = model or get_model()
 
     goal_label, goal_description = describe_goal(sim_stats)
 
@@ -90,7 +90,7 @@ def analyze_sim_result(sim_stats, trials=50000):
 
 
     response = client.chat.completions.create(
-        model="gpt-4o",
+        model=model,
         messages=[
             {"role": "system", "content": system_prompt.strip()},
             {"role": "user", "content": user_prompt.strip()}

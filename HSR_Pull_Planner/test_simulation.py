@@ -6,8 +6,7 @@ def test_structure():
 
     result = simulation.run_simulation_verbose(
         total_pulls=50,
-        desired_chars=1,
-        desired_lcs=0,
+        strategy=[{"banner": "char", "copies": 1}],
         start_char_pity=0,
         start_char_guarantee=False,
         start_lc_pity=0,
