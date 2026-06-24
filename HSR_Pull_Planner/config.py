@@ -15,3 +15,7 @@ def get_openai_api_key() -> str:
 
 def get_model() -> str:
     return os.getenv("OPENAI_MODEL", "gpt-4o")
+
+def get_allowed_origins() -> list:
+    origins = os.getenv("ALLOWED_ORIGINS", "http://localhost:5173")
+    return [o.strip() for o in origins.split(",")]
