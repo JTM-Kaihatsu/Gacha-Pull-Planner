@@ -128,10 +128,42 @@ export default function App() {
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
               <summary className="text-sm font-medium text-slate-400 select-none">Failure Stats</summary>
-              <div className="grid grid-cols-2 gap-3 mt-3">
-                <StatCard label="Char Win Rate (fails)" value={stats.failure_char_win_rate} />
-                <StatCard label="LC Win Rate (fails)" value={stats.failure_lc_win_rate} />
-                <StatCard label="Leftover Pulls (fail)" value={stats.avg_leftover_pulls_on_failure} />
+              <div className="mt-3 space-y-4">
+
+                {stats.most_common_failure_state && (
+                  <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-4 py-3">
+                    <div className="text-xs text-red-400 uppercase tracking-wider mb-1">Most Common Failure</div>
+                    <div className="text-sm text-red-200">
+                      Ran out after <span className="font-semibold text-white">{stats.most_common_failure_state.chars} char {stats.most_common_failure_state.chars === 1 ? 'copy' : 'copies'}</span> and <span className="font-semibold text-white">{stats.most_common_failure_state.lcs} LC {stats.most_common_failure_state.lcs === 1 ? 'copy' : 'copies'}</span>
+                      <span className="text-red-400 ml-2">({stats.most_common_failure_state.pct}% of failures)</span>
+                    </div>
+                  </div>
+                )}
+
+                {stats.failure_state_distribution?.length > 1 && (
+                  <div>
+                    <div className="text-xs text-slate-500 uppercase tracking-wider mb-2">Failure Breakdown</div>
+                    <div className="space-y-1">
+                      {stats.failure_state_distribution.map((s, i) => (
+                        <div key={i} className="flex items-center gap-3">
+                          <div
+                            className="h-2 rounded-full bg-red-700/60"
+                            style={{ width: `${s.pct}%`, minWidth: '4px', maxWidth: '100%' }}
+                          />
+                          <span className="text-xs text-slate-400 whitespace-nowrap">
+                            {s.chars}C / {s.lcs}LC — {s.pct}%
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-2 gap-3">
+                  <StatCard label="Char Win Rate (fails)" value={stats.failure_char_win_rate} />
+                  <StatCard label="LC Win Rate (fails)" value={stats.failure_lc_win_rate} />
+                  <StatCard label="Leftover Pulls (fail)" value={stats.avg_leftover_pulls_on_failure} />
+                </div>
               </div>
             </details>
 
