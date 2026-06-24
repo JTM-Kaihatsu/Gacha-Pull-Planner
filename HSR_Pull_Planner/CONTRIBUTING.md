@@ -120,3 +120,4 @@ cp .env.example .env  # then add your OpenAI key
 pip install fastapi uvicorn openai numpy python-dotenv
 uvicorn main:app --reload
 ```
+You can then open Swagger and test the POST in `http://localhost:8000/docs` after running the `uvicorn main:app --reload` command

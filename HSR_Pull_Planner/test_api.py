@@ -34,15 +34,20 @@ def test_endpoint(monkeypatch):
 
     payload = {
         "total_pulls": 50,
-        "desired_chars": 1,
-        "desired_lcs": 0,
         "start_char_pity": 0,
         "start_char_guarantee": False,
         "start_lc_pity": 0,
-        "start_lc_guarantee": False
+        "start_lc_guarantee": False,
+        "strategy": [
+            {"banner": "char", "copies": 1},
+            {"banner": "lc",   "copies": 1},
+            {"banner": "char", "copies": 2},
+        ]
     }
 
     response = client.post("/analyze", json=payload)
+    print(response.json())
+
 
     # ------------------------------------------------------------------
     # 4. Assertions
@@ -51,5 +56,7 @@ def test_endpoint(monkeypatch):
     data = response.json()
 
     assert data["analysis_text"] == "analysis"
+    assert data["trials"] == dummy_stats["trials"]
     for key, value in dummy_stats.items():
-        assert data["stats_summary"][key] == value
+        if key != "trials": 
+            assert data["stats_summary"][key] == value

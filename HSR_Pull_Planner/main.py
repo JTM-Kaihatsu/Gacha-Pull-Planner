@@ -2,6 +2,7 @@
 """main.py
 FastAPI entrypoint exposing `/analyze`.
 """
+from typing import List
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from simulation import run_simulation_verbose
@@ -10,22 +11,26 @@ from config import get_openai_api_key
 
 app = FastAPI()
 
+class PhaseRequest(BaseModel):
+    banner: str   # "char" or "lc"
+    copies: int
+
 class SimRequest(BaseModel):
     total_pulls: int
-    desired_chars: int
-    desired_lcs: int
     start_char_pity: int
     start_char_guarantee: bool = False
     start_lc_pity: int
     start_lc_guarantee: bool = False
+    strategy: List[PhaseRequest]
 
 @app.post("/analyze")
 def analyze(req: SimRequest):
     try:
+        strategy = [{"banner": p.banner, "copies": p.copies} for p in req.strategy]
+
         stats = run_simulation_verbose(
             total_pulls=req.total_pulls,
-            desired_chars=req.desired_chars,
-            desired_lcs=req.desired_lcs,
+            strategy=strategy,
             start_char_pity=req.start_char_pity,
             start_char_guarantee=req.start_char_guarantee,
             start_lc_pity=req.start_lc_pity,
