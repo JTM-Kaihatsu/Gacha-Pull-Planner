@@ -248,6 +248,7 @@ def run_simulation_verbose(
 
         # Reservoir sampling: keep a representative sample of VIZ_SAMPLE_SIZE runs
         viz_entry = {
+            "trial": i + 1,
             "success": success,
             "total_pulls_used": used,
             "phases": [

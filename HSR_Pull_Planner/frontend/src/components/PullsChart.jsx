@@ -45,6 +45,7 @@ const CustomTooltip = ({ active, payload, label }) => {
 
   return (
     <div className="bg-slate-900 border border-slate-700 rounded-lg p-3 text-xs shadow-xl max-w-[200px]">
+      <div className="text-slate-500 mb-1">Run #{run.trial?.toLocaleString()}</div>
       <div className={`font-semibold mb-2 ${run.success ? 'text-violet-300' : 'text-red-400'}`}>
         {run.success ? 'Success' : 'Failure'} — {run.total_pulls_used} pulls
       </div>
