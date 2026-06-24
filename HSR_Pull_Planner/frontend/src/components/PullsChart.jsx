@@ -67,13 +67,23 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function PullsChart({ vizSample, totalPulls }) {
+export default function PullsChart({ vizSample, totalPulls, sampleSize = 500 }) {
   if (!vizSample?.length) return null
 
-  const data = buildChartData(vizSample)
+  // Slice proportionally: keep success/failure ratio intact
+  const totalRuns  = vizSample.length
+  const ratio      = sampleSize / totalRuns
+  const successes  = vizSample.filter(r => r.success)
+  const failures   = vizSample.filter(r => !r.success)
+  const sliced = [
+    ...successes.slice(0, Math.round(successes.length * ratio)),
+    ...failures.slice(0,  Math.round(failures.length  * ratio)),
+  ]
+
+  const data = buildChartData(sliced)
   const phaseKeys = getPhaseKeys(vizSample)
-  const successCount = vizSample.filter(r => r.success).length
-  const failCount    = vizSample.filter(r => !r.success).length
+  const successCount = sliced.filter(r => r.success).length
+  const failCount    = sliced.filter(r => !r.success).length
 
   return (
     <div className="bg-slate-800/40 border border-slate-700 rounded-xl p-4">

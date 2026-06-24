@@ -174,7 +174,7 @@ def simulate_combo_verbose(
     return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
 
 
-VIZ_SAMPLE_SIZE = 300
+VIZ_SAMPLE_SIZE = 1000
 
 
 def _build_phase_labels(strategy):

@@ -24,6 +24,7 @@ export default function App() {
   const [result, setResult]             = useState(null)
   const [error, setError]               = useState(null)
   const [strategyError, setStrategyError] = useState(null)
+  const [sampleSize, setSampleSize]       = useState(500)
 
   function handleFormChange(key, value) {
     setForm(f => ({ ...f, [key]: value }))
@@ -128,10 +129,22 @@ export default function App() {
             </div>
 
             {stats.viz_sample?.length > 0 && (
-              <PullsChart
-                vizSample={stats.viz_sample}
-                totalPulls={form.total_pulls}
-              />
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-slate-400">Runs displayed: <span className="text-slate-200 font-medium">{sampleSize}</span></span>
+                  <input
+                    type="range" min={100} max={1000} step={50}
+                    value={sampleSize}
+                    onChange={e => setSampleSize(+e.target.value)}
+                    className="w-40 accent-violet-500"
+                  />
+                </div>
+                <PullsChart
+                  vizSample={stats.viz_sample}
+                  totalPulls={form.total_pulls}
+                  sampleSize={sampleSize}
+                />
+              </div>
             )}
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
