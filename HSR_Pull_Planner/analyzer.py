@@ -54,6 +54,23 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
     else:
         failure_state_line = "No failure data available."
 
+    cs = sim_stats.get("correlation_stats", {})
+    s  = cs.get("total_successes", 0)
+    f  = cs.get("total_failures", 0)
+
+    def fmt(val, total):
+        if val is None or total == 0:
+            return "N/A"
+        return f"{val} of {total}"
+
+    correlation_lines = f"""
+        Factor breakdown (counts out of {s} successes / {f} failures):
+        - Above-average 4★ refunds: {fmt(cs.get('above_avg_refunds_in_successes'), s)} successes | {fmt(cs.get('above_avg_refunds_in_failures'), f)} failures (avg refunds overall: {cs.get('overall_avg_refunds', '?')})
+        - Early char pity hit (< pull {cs.get('early_pity_threshold', 70)}): {fmt(cs.get('early_char_pity_in_successes'), s)} successes | {fmt(cs.get('early_char_pity_in_failures'), f)} failures
+        - Won all needed char 50/50s: {fmt(cs.get('all_5050s_won_in_successes'), s)} successes | {fmt(cs.get('all_5050s_won_in_failures'), f)} failures
+        - Won all needed LC 75/25s: {fmt(cs.get('all_lc_75s_won_in_successes'), s)} successes | {fmt(cs.get('all_lc_75s_won_in_failures'), f)} failures
+    """
+
     user_prompt = """
         Goal: {goal_label} — {goal_description}
         Pulls available: {initial_pulls} | Char pity: {start_char_pity} (guarantee: {start_char_guarantee}) | LC pity: {start_lc_pity} (guarantee: {start_lc_guarantee})
@@ -66,17 +83,20 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
         Avg leftover pulls — success: {avg_leftover_pulls_on_success} | fail: {avg_leftover_pulls_on_failure}
         Avg refunds — success: {avg_refund_success} | fail: {avg_refund_fail}
         {failure_state_line}
+        {correlation_lines}
 
-        Write a short, blunt analysis in plain English — 3 to 5 sentences max, no headers, no bullet points.
+        Write a short, blunt analysis in plain English — 4 to 6 sentences max, no headers, no bullet points.
         Answer exactly these questions in order:
-        1. How many 50/50s and 75/25s did the player need to win to succeed, and does the data show they had to get lucky or was it forgiving?
-        2. Did they need early pity hits (well before soft pity) to have pulls left over, or was average pity fine?
-        3. Did 4-star refunds meaningfully help — i.e. did successful runs get noticeably more value from refunds than failed ones?
-        4. Use the most common failure state to explain what "losing" typically looks like for this player — how far did they get before running out?
-        5. One sentence verdict: is this doable, tight, or a stretch — and if tight or a stretch, how many more pulls would make it comfortable?
+        1. How many 50/50s and 75/25s did the player need to win, and do the counts show they had to win most/all of them or was losing one survivable?
+        2. Did early pity hits matter — were they noticeably more common in successful runs vs failed ones?
+        3. Did above-average 4★ refunds meaningfully separate winners from losers, or were refunds roughly equally distributed? Use the actual counts to justify your answer — if the split is close, say so plainly.
+        4. Use the most common failure state to describe what losing typically looks like.
+        5. One sentence verdict: doable, tight, or a stretch — and if tight or a stretch, how many more pulls would help?
         Do not use jargon. Write like you're texting a friend who plays the game.
         """.format(goal_label=goal_label, goal_description=goal_description,
-                   failure_state_line=failure_state_line, **sim_stats)
+                   failure_state_line=failure_state_line,
+                   correlation_lines=correlation_lines,
+                   **sim_stats)
 
 
     response = client.chat.completions.create(

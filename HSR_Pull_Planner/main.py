@@ -63,6 +63,7 @@ def analyze(req: SimRequest):
                 "avg_refund_fail": stats["avg_refund_fail"],
                 "most_common_failure_state": stats["most_common_failure_state"],
                 "failure_state_distribution": stats["failure_state_distribution"],
+                "correlation_stats": stats["correlation_stats"],
             },
         }
     except Exception as exc:
