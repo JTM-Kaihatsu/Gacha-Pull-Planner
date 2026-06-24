@@ -4,12 +4,20 @@ FastAPI entrypoint exposing `/analyze`.
 """
 from typing import List
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from simulation import run_simulation_verbose
 from analyzer import analyze_sim_result
-from config import get_openai_api_key
+from config import get_openai_api_key, get_allowed_origins
 
 app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=get_allowed_origins(),
+    allow_methods=["POST"],
+    allow_headers=["Content-Type"],
+)
 
 class PhaseRequest(BaseModel):
     banner: str   # "char" or "lc"

@@ -1,0 +1,14 @@
+@import "tailwindcss";
+
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  margin: 0;
+  background: #0f0f13;
+  color: #e2e2e8;
+  font-family: system-ui, 'Segoe UI', sans-serif;
+}
