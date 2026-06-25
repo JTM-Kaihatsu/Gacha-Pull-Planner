@@ -118,7 +118,7 @@ export default function App() {
 
         {result && stats && (
           <div className="mt-8 space-y-6">
-            <h2 className="text-lg font-semibold text-white">Results</h2>
+            <h2 className="text-lg font-semibold text-white">Results for Successful Runs</h2>
 
             <div className="grid grid-cols-2 gap-3">
               <StatCard label="Success Rate" value={stats.success_rate} highlight />
@@ -149,7 +149,7 @@ export default function App() {
             )}
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-              <summary className="text-sm font-medium text-slate-400 select-none">Failure Stats</summary>
+              <summary className="text-sm font-medium text-slate-400 select-none">Failed Run Stats</summary>
               <div className="mt-3 space-y-4">
 
                 {stats.most_common_failure_state && (
