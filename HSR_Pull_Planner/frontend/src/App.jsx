@@ -83,7 +83,8 @@ export default function App() {
             <input
               type="number" min={1}
               value={form.total_pulls}
-              onChange={e => handleFormChange('total_pulls', Math.max(1, +e.target.value))}
+              onChange={e => handleFormChange('total_pulls', e.target.value === '' ? '' : +e.target.value)}
+              onBlur={e => handleFormChange('total_pulls', Math.max(1, +e.target.value || 1))}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
             />
           </div>
