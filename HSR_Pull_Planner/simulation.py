@@ -7,6 +7,7 @@ makes them easy to unit‑test and reuse.
 """
 
 from typing import Dict, Tuple
+import random
 import numpy as np
 import pandas as pd
 
@@ -66,17 +67,22 @@ def simulate_combo_verbose(
     chars_obtained = 0
     lcs_obtained = 0
 
+    phase_detail = []  # per-phase breakdown for visualization
+
     # Execute each phase in order. Pity/guarantee state is shared, so pulling
     # LC between two char phases genuinely affects the budget for the next phase.
     for phase in strategy:
         banner = phase["banner"]
         copies_needed = phase["copies"]
         copies_got = 0
+        phase_pulls = 0
+        phase_refunds = 0.0
 
         while copies_got < copies_needed and remaining > 0:
             if banner == "char":
                 remaining -= 1
                 used_pulls += 1
+                phase_pulls += 1
                 pity_char += 1
                 pity_4star_char += 1
 
@@ -101,10 +107,12 @@ def simulate_combo_verbose(
                     if full_4star_chars:
                         remaining += 1
                         refunded_pulls += 1.0
+                        phase_refunds += 1.0
 
             else:  # banner == "lc"
                 remaining -= 1
                 used_pulls += 1
+                phase_pulls += 1
                 pity_lc += 1
                 pity_4star_lc += 1
 
@@ -128,6 +136,14 @@ def simulate_combo_verbose(
                     pity_4star_lc = 0
                     remaining += 0.4
                     refunded_pulls += 0.4
+                    phase_refunds += 0.4
+
+        phase_detail.append({
+            "banner": banner,
+            "copies": copies_needed,
+            "pulls_used": phase_pulls,
+            "refunds": round(phase_refunds, 2),
+        })
 
     success = (chars_obtained >= desired_chars and lcs_obtained >= desired_lcs)
     pulls_leftover = remaining
@@ -152,9 +168,35 @@ def simulate_combo_verbose(
         "desired_lcs": desired_lcs,
         "chars_obtained": chars_obtained,
         "lcs_obtained": lcs_obtained,
+        "phase_detail": phase_detail,
     }
 
     return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
+
+
+VIZ_SAMPLE_SIZE = 1000
+
+
+def _build_phase_labels(strategy):
+    """Returns a label per strategy phase: E0/E1/E2... for char, S1/S2... for lc."""
+    char_idx = 0
+    lc_idx = 0
+    labels = []
+    for phase in strategy:
+        n = phase["copies"]
+        if phase["banner"] == "char":
+            if n == 1:
+                labels.append(f"E{char_idx}")
+            else:
+                labels.append(f"E{char_idx}–E{char_idx + n - 1}")
+            char_idx += n
+        else:
+            if n == 1:
+                labels.append(f"S{lc_idx + 1}")
+            else:
+                labels.append(f"S{lc_idx + 1}–S{lc_idx + n}")
+            lc_idx += n
+    return labels
 
 
 def run_simulation_verbose(
@@ -186,8 +228,10 @@ def run_simulation_verbose(
     fail_leftover = []
 
     metadata_logs = []
+    phase_labels = _build_phase_labels(strategy)
+    viz_reservoir = []  # reservoir sample of per-run phase detail
 
-    for _ in range(trials):
+    for i in range(trials):
         success, used, refunded, leftover, meta = simulate_combo_verbose(
             total_pulls,
             strategy,
@@ -201,6 +245,23 @@ def run_simulation_verbose(
         all_refunded.append(refunded)
         all_leftover.append(leftover)
         metadata_logs.append({**meta, "success": success})
+
+        # Reservoir sampling: keep a representative sample of VIZ_SAMPLE_SIZE runs
+        viz_entry = {
+            "trial": i + 1,
+            "success": success,
+            "total_pulls_used": used,
+            "phases": [
+                {**pd_item, "label": phase_labels[j]}
+                for j, pd_item in enumerate(meta["phase_detail"])
+            ],
+        }
+        if i < VIZ_SAMPLE_SIZE:
+            viz_reservoir.append(viz_entry)
+        else:
+            j = random.randint(0, i)
+            if j < VIZ_SAMPLE_SIZE:
+                viz_reservoir[j] = viz_entry
 
         if success:
             successes += 1
@@ -368,6 +429,7 @@ def run_simulation_verbose(
         "most_common_failure_state": most_common,
         "failure_state_distribution": top_states,
         "correlation_stats": correlation_stats,
+        "viz_sample": viz_reservoir,
     }
 
     return stats_summary

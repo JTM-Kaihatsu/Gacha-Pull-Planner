@@ -6,7 +6,8 @@ export default function PityInputs({ form, onChange }) {
         <input
           type="number" min={0} max={90}
           value={form.start_char_pity}
-          onChange={e => onChange('start_char_pity', Math.min(90, Math.max(0, +e.target.value)))}
+          onChange={e => onChange('start_char_pity', e.target.value === '' ? '' : +e.target.value)}
+          onBlur={e => onChange('start_char_pity', Math.min(90, Math.max(0, +e.target.value || 0)))}
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
         />
         <label className="flex items-center gap-2 mt-2 text-sm text-slate-400 cursor-pointer">
@@ -25,7 +26,8 @@ export default function PityInputs({ form, onChange }) {
         <input
           type="number" min={0} max={80}
           value={form.start_lc_pity}
-          onChange={e => onChange('start_lc_pity', Math.min(80, Math.max(0, +e.target.value)))}
+          onChange={e => onChange('start_lc_pity', e.target.value === '' ? '' : +e.target.value)}
+          onBlur={e => onChange('start_lc_pity', Math.min(80, Math.max(0, +e.target.value || 0)))}
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
         />
         <label className="flex items-center gap-2 mt-2 text-sm text-slate-400 cursor-pointer">

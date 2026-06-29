@@ -4,6 +4,7 @@ import PityInputs from './components/PityInputs'
 import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
+import PullsChart from './components/PullsChart'
 import './index.css'
 
 const DEFAULT_FORM = {
@@ -23,6 +24,7 @@ export default function App() {
   const [result, setResult]             = useState(null)
   const [error, setError]               = useState(null)
   const [strategyError, setStrategyError] = useState(null)
+  const [sampleSize, setSampleSize]       = useState(500)
 
   function handleFormChange(key, value) {
     setForm(f => ({ ...f, [key]: value }))
@@ -81,7 +83,8 @@ export default function App() {
             <input
               type="number" min={1}
               value={form.total_pulls}
-              onChange={e => handleFormChange('total_pulls', Math.max(1, +e.target.value))}
+              onChange={e => handleFormChange('total_pulls', e.target.value === '' ? '' : +e.target.value)}
+              onBlur={e => handleFormChange('total_pulls', Math.max(1, +e.target.value || 1))}
               className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
             />
           </div>
@@ -115,7 +118,7 @@ export default function App() {
 
         {result && stats && (
           <div className="mt-8 space-y-6">
-            <h2 className="text-lg font-semibold text-white">Results</h2>
+            <h2 className="text-lg font-semibold text-white">Results for Successful Runs</h2>
 
             <div className="grid grid-cols-2 gap-3">
               <StatCard label="Success Rate" value={stats.success_rate} highlight />
@@ -126,8 +129,27 @@ export default function App() {
               <StatCard label="LC 75/25 Win Rate" value={stats.successes_lc_win_rate} />
             </div>
 
+            {stats.viz_sample?.length > 0 && (
+              <div>
+                <div className="flex items-center justify-between mb-2">
+                  <span className="text-xs text-slate-400">Runs displayed: <span className="text-slate-200 font-medium">{sampleSize}</span></span>
+                  <input
+                    type="range" min={100} max={1000} step={50}
+                    value={sampleSize}
+                    onChange={e => setSampleSize(+e.target.value)}
+                    className="w-40 accent-violet-500"
+                  />
+                </div>
+                <PullsChart
+                  vizSample={stats.viz_sample}
+                  totalPulls={form.total_pulls}
+                  sampleSize={sampleSize}
+                />
+              </div>
+            )}
+
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-              <summary className="text-sm font-medium text-slate-400 select-none">Failure Stats</summary>
+              <summary className="text-sm font-medium text-slate-400 select-none">Failed Run Stats</summary>
               <div className="mt-3 space-y-4">
 
                 {stats.most_common_failure_state && (
