@@ -11,8 +11,8 @@ import {
 
 // Colors per banner type (net pulls and refund shade)
 const PHASE_COLORS = {
-  char: { net: '#7c3aed', refund: '#a78bfa' },
-  lc:   { net: '#d97706', refund: '#fbbf24' },
+  char:   { net: '#7c3aed', refund: '#a78bfa' },
+  weapon: { net: '#d97706', refund: '#fbbf24' },
 }
 
 function buildChartData(vizSample) {
@@ -95,8 +95,8 @@ export default function PullsChart({ vizSample, totalPulls, sampleSize = 500, sh
       <div className="flex gap-4 mb-3 text-xs text-slate-400">
         <span><span className="inline-block w-2 h-2 rounded-sm bg-violet-600 mr-1" />Char pulls</span>
         {showRefunds && <span><span className="inline-block w-2 h-2 rounded-sm bg-violet-400 mr-1" />Char refunds</span>}
-        <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-600 mr-1" />LC pulls</span>
-        {showRefunds && <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-400 mr-1" />LC refunds</span>}
+        <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-600 mr-1" />Weapon pulls</span>
+        {showRefunds && <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-400 mr-1" />Weapon refunds</span>}
         <span><span className="inline-block w-3 h-2 border border-red-500 mr-1" />Failed run</span>
       </div>
 

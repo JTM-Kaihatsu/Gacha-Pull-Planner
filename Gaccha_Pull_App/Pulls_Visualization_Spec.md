@@ -9,7 +9,7 @@
 
 ## Overview
 
-A stacked bar chart showing a sample of simulation runs. Each bar is one run. Bars are stacked by pull phase (E0, S1, E1, etc.), with refunds shown as a distinct sub-segment within each phase. Success and failure runs are visually separated.
+A stacked bar chart showing a sample of simulation runs. Each bar is one run. Bars are stacked by pull phase (E0, W1, E1, etc.), with refunds shown as a distinct sub-segment within each phase. Success and failure runs are visually separated.
 
 ---
 
@@ -48,8 +48,8 @@ Each bar represents one simulation run, stacked bottom-to-top in pull order:
 ┌─────────────┐  ← total pulls used
 │  E1 refunds │  (amber, hatched)
 │  E1 pulls   │  (violet)
-│  S1 refunds │  (orange, hatched)
-│  S1 pulls   │  (amber)
+│  W1 refunds │  (orange, hatched)
+│  W1 pulls   │  (amber)
 │  E0 refunds │  (violet, hatched)
 │  E0 pulls   │  (violet)
 └─────────────┘
@@ -61,8 +61,8 @@ Each bar represents one simulation run, stacked bottom-to-top in pull order:
 |---|---|
 | Char phase (net pulls) | Violet |
 | Char phase (refunds) | Violet, hatched / lighter opacity |
-| LC phase (net pulls) | Amber |
-| LC phase (refunds) | Amber, hatched / lighter opacity |
+| Weapon phase (net pulls) | Amber |
+| Weapon phase (refunds) | Amber, hatched / lighter opacity |
 
 ### Success vs Failure Distinction
 
@@ -108,7 +108,7 @@ Sampling strategy: **reservoir sampling** — randomly replace entries as trials
     "total_pulls_used": 187,
     "phases": [
       {"label": "E0", "banner": "char", "pulls_used": 74, "refunds": 8.0},
-      {"label": "S1", "banner": "lc",   "pulls_used": 68, "refunds": 4.4},
+      {"label": "W1", "banner": "weapon",   "pulls_used": 68, "refunds": 4.4},
       {"label": "E1", "banner": "char", "pulls_used": 45, "refunds": 5.0}
     ]
   },
@@ -116,7 +116,7 @@ Sampling strategy: **reservoir sampling** — randomly replace entries as trials
 ]
 ```
 
-Phase labels are derived from the strategy: char phases are labeled E0, E1, E2… (incrementing per copy obtained); LC phases are labeled S1, S2… The label reflects what was *completed* in that phase, not just the banner type.
+Phase labels are derived from the strategy: char phases are labeled E0, E1, E2… (incrementing per copy obtained); Weapon phases are labeled W1, W2… The label reflects what was *completed* in that phase, not just the banner type.
 
 ---
 

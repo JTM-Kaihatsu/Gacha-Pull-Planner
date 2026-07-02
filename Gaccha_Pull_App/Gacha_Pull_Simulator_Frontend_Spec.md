@@ -25,18 +25,18 @@ The main input screen. Player fills in their current state and pull goal, then s
 - Total Pulls *(integer)*
 - Character Pity *(0–90)*
 - Character Guarantee *(toggle)*
-- LC Pity *(0–80)*
-- LC Guarantee *(toggle)*
+- Weapon Pity *(0–80)*
+- Weapon Guarantee *(toggle)*
 - How many character copies? *(1–6, maps to E0–E5)*
-- How many Light Cones? *(0–5, maps to none through S5)*
-- **[Conditional]** LC ordering question — see Strategy Logic below
+- How many Weapons? *(0–5, maps to none through W5)*
+- **[Conditional]** Weapon ordering question — see Strategy Logic below
 
 ### P2 — Results Panel
 Shown after simulation completes. Lives on the same page — no navigation.
 
 **Fields:**
 - Success Rate *(prominent)*
-- Avg Pity — Char / LC
+- Avg Pity — Char / Weapon
 - Win Rate — 50/50 and 75/25
 - Leftover Pulls
 - AI Analysis Text
@@ -56,54 +56,54 @@ The player never writes JSON. The form collects two numbers and an optional orde
 
 ### Step 1 — Collect inputs
 - **Char copies** (`desired_chars`): 1–6
-- **LC copies** (`desired_lcs`): 0–5
+- **Weapon copies** (`desired_weapons`): 0–5
 
 ### Step 2 — Determine if ordering question is needed
 
-Show the LC ordering question **only when**:
+Show the Weapon ordering question **only when**:
 - `desired_chars > 1` **AND**
-- `desired_lcs >= 1`
+- `desired_weapons >= 1`
 
-If `desired_chars == 1` or `desired_lcs == 0`, no ordering decision exists — build the strategy directly.
+If `desired_chars == 1` or `desired_weapons == 0`, no ordering decision exists — build the strategy directly.
 
-### Step 3 — LC Ordering Question (conditional)
+### Step 3 — Weapon Ordering Question (conditional)
 
-> *"When do you want to pull your first Light Cone?"*
+> *"When do you want to pull your first Weapon?"*
 
 Radio buttons generated dynamically based on `desired_chars`:
 
 | Option | Meaning |
 |---|---|
-| After E0 | Pull LC before going for E1 |
-| After E1 | Pull LC before going for E2 |
-| After E2 | Pull LC before going for E3 |
+| After E0 | Pull Weapon before going for E1 |
+| After E1 | Pull Weapon before going for E2 |
+| After E2 | Pull Weapon before going for E3 |
 | *(continues to second-to-last copy)* | … |
 
-The user picks the insertion point for their **first** LC copy.
+The user picks the insertion point for their **first** Weapon copy.
 
-### Step 4 — Multi-LC Rule
+### Step 4 — Multi-Weapon Rule
 
-If `desired_lcs > 1`, all copies beyond the first are **always appended to the end** of the strategy, after all character copies are obtained. The ordering question only governs where the first LC sits.
+If `desired_weapons > 1`, all copies beyond the first are **always appended to the end** of the strategy, after all character copies are obtained. The ordering question only governs where the first Weapon sits.
 
-> *Example: 3 char copies, 3 LC copies, first LC after E0*
-> → E0 → S1 → E1 → E2 → S2 → S3
+> *Example: 3 char copies, 3 Weapon copies, first Weapon after E0*
+> → E0 → W1 → E1 → E2 → W2 → W3
 
 ### Step 5 — Strategy Array Mapping
 
-| desired_chars | desired_lcs | LC after | strategy array |
+| desired_chars | desired_weapons | Weapon after | strategy array |
 |---|---|---|---|
 | 1 | 0 | — | `[{char,1}]` |
-| 1 | 1 | — | `[{char,1},{lc,1}]` |
-| 1 | 2 | — | `[{char,1},{lc,1},{lc,1}]` |
-| 2 | 1 | After E0 | `[{char,1},{lc,1},{char,1}]` |
-| 2 | 1 | After E1 | `[{char,2},{lc,1}]` |
-| 3 | 1 | After E0 | `[{char,1},{lc,1},{char,2}]` |
-| 3 | 1 | After E1 | `[{char,2},{lc,1},{char,1}]` |
-| 3 | 1 | After E2 | `[{char,3},{lc,1}]` |
-| 3 | 2 | After E0 | `[{char,1},{lc,1},{char,2},{lc,1}]` |
-| 3 | 3 | After E1 | `[{char,2},{lc,1},{char,1},{lc,2}]` |
+| 1 | 1 | — | `[{char,1},{weapon,1}]` |
+| 1 | 2 | — | `[{char,1},{weapon,1},{weapon,1}]` |
+| 2 | 1 | After E0 | `[{char,1},{weapon,1},{char,1}]` |
+| 2 | 1 | After E1 | `[{char,2},{weapon,1}]` |
+| 3 | 1 | After E0 | `[{char,1},{weapon,1},{char,2}]` |
+| 3 | 1 | After E1 | `[{char,2},{weapon,1},{char,1}]` |
+| 3 | 1 | After E2 | `[{char,3},{weapon,1}]` |
+| 3 | 2 | After E0 | `[{char,1},{weapon,1},{char,2},{weapon,1}]` |
+| 3 | 3 | After E1 | `[{char,2},{weapon,1},{char,1},{weapon,2}]` |
 
-**Rule:** `lc insertion point` splits char copies into two groups. Remaining LC copies (`desired_lcs - 1`) are appended at the end.
+**Rule:** `weapon insertion point` splits char copies into two groups. Remaining Weapon copies (`desired_weapons - 1`) are appended at the end.
 
 ---
 
@@ -111,8 +111,8 @@ If `desired_lcs > 1`, all copies beyond the first are **always appended to the e
 
 | Component | Responsibility | Notes |
 |---|---|---|
-| `StrategyBuilder` | Renders the char/LC number inputs + conditional ordering question | Builds strategy array internally |
-| `PityInputs` | Numeric inputs for char/lc pity + guarantee toggles | Validate 0–90 (char), 0–80 (LC) |
+| `StrategyBuilder` | Renders the char/Weapon number inputs + conditional ordering question | Builds strategy array internally |
+| `PityInputs` | Numeric inputs for char/weapon pity + guarantee toggles | Validate 0–90 (char), 0–80 (Weapon) |
 | `StatCard` | Displays one stat with label and value | Reused across results grid |
 | `AnalysisBlock` | Renders `analysis_text` from GPT | Plain text, no markdown parsing needed |
 | `ApiService` | Wraps `POST /analyze`, handles errors | Single fetch call, no state library needed |
@@ -164,8 +164,8 @@ The calendar feature (currently separate, not connected to FastAPI) will eventua
 | **CORS** | FastAPI must allowlist the React origin. Configured via environment variable (`ALLOWED_ORIGINS`) so local dev and production domains are handled separately without code changes. |
 | **Latency** | 10,000 trials + GPT call may take 5–10s. Loading UX must set expectations or users will assume it's broken. |
 | **OpenAI Key** | Must never be exposed to the browser — stays server-side in FastAPI only. |
-| **Input Validation** | Pity values out of range (char > 90, LC > 80) should be caught client-side before hitting the API. |
-| **Whale edge cases** | Multi-LC strategies (S2+) are supported: extra copies always append to end of strategy. LC input capped at 5. |
+| **Input Validation** | Pity values out of range (char > 90, Weapon > 80) should be caught client-side before hitting the API. |
+| **Whale edge cases** | Multi-Weapon strategies (W2+) are supported: extra copies always append to end of strategy. Weapon input capped at 5. |
 
 ---
 

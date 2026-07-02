@@ -50,7 +50,7 @@ pip install fastapi uvicorn openai numpy python-dotenv pytest httpx
 | File / Folder      | Purpose |
 |--------------------|---------|
 | `main.py`          | FastAPI server, exposes the `/analyze` endpoint |
-| `simulation.py`    | Core logic for character & lightcone pull simulation (pure functions, no I/O) |
+| `simulation.py`    | Core logic for character & weapon pull simulation (pure functions, no I/O) |
 | `analyzer.py`      | Formats and sends OpenAI API requests, returns summaries |
 | `config.py`        | Loads the OpenAI API key from `.env` (never hardcoded) |
 | `requirements.txt` | All required packages for running or deploying the app |
@@ -102,9 +102,9 @@ See `README.md` for full request/response schema.
 | Variable | Where | What it does |
 |----------|-------|---------------|
 | `total_pulls` | request | How many pulls player can use |
-| `desired_chars`, `desired_lcs` | request | Target number of characters/LCs |
-| `start_char_pity`, `start_lc_pity` | request | Current pity counters |
-| `start_char_guarantee`, `start_lc_guarantee` | request | True = banner is guaranteed next pull |
+| `desired_chars`, `desired_weapons` | request | Target number of characters/weapons |
+| `start_char_pity`, `start_weapon_pity` | request | Current pity counters |
+| `start_char_guarantee`, `start_weapon_guarantee` | request | True = banner is guaranteed next pull |
 | `run_simulation_verbose(...)` | `simulation.py` | Runs the full simulation logic |
 | `analyze_sim_result(...)` | `analyzer.py` | Sends result to OpenAI for summary |
 | `get_openai_api_key()` | `config.py` | Safely retrieves the API key |

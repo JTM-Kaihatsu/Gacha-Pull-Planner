@@ -20,7 +20,7 @@ app.add_middleware(
 )
 
 class PhaseRequest(BaseModel):
-    banner: str   # "char" or "lc"
+    banner: str   # "char" or "weapon"
     copies: int
 
 class PityConfig(BaseModel):
@@ -32,12 +32,12 @@ class SimRequest(BaseModel):
     total_pulls: int
     start_char_pity: int
     start_char_guarantee: bool = False
-    start_lc_pity: int
-    start_lc_guarantee: bool = False
+    start_weapon_pity: int
+    start_weapon_guarantee: bool = False
     strategy: List[PhaseRequest]
     full_4star_chars: bool = True
     char_pity_config: PityConfig = PityConfig()
-    lc_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
+    weapon_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
 @app.post("/analyze")
 def analyze(req: SimRequest):
@@ -49,11 +49,11 @@ def analyze(req: SimRequest):
             strategy=strategy,
             start_char_pity=req.start_char_pity,
             start_char_guarantee=req.start_char_guarantee,
-            start_lc_pity=req.start_lc_pity,
-            start_lc_guarantee=req.start_lc_guarantee,
+            start_weapon_pity=req.start_weapon_pity,
+            start_weapon_guarantee=req.start_weapon_guarantee,
             full_4star_chars=req.full_4star_chars,
             char_pity_config=req.char_pity_config.model_dump(),
-            lc_pity_config=req.lc_pity_config.model_dump(),
+            weapon_pity_config=req.weapon_pity_config.model_dump(),
         )
         analysis_text = analyze_sim_result(stats)
 
@@ -63,13 +63,13 @@ def analyze(req: SimRequest):
             "stats_summary": {
                 "success_rate": stats["success_rate"],
                 "avg_pity_char": stats["avg_pity_char"],
-                "avg_pity_lc": stats["avg_pity_lc"],
+                "avg_pity_weapon": stats["avg_pity_weapon"],
                 "successes_char_win_rate": stats["successes_char_win_rate"],
-                "successes_lc_win_rate": stats["successes_lc_win_rate"],
+                "successes_weapon_win_rate": stats["successes_weapon_win_rate"],
                 "avg_leftover_pulls_on_success": stats["avg_leftover_pulls_on_success"],
                 "avg_refund_success": stats["avg_refund_success"],
                 "failure_char_win_rate": stats["failure_char_win_rate"],
-                "failure_lc_win_rate": stats["failure_lc_win_rate"],
+                "failure_weapon_win_rate": stats["failure_weapon_win_rate"],
                 "avg_leftover_pulls_on_failure": stats["avg_leftover_pulls_on_failure"],
                 "avg_refund_fail": stats["avg_refund_fail"],
                 "most_common_failure_state": stats["most_common_failure_state"],

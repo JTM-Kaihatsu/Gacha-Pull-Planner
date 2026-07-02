@@ -5,22 +5,22 @@ import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
 import PullsChart from './components/PullsChart'
-import AdvancedSettings, { CHAR_DEFAULTS, LC_DEFAULTS } from './components/AdvancedSettings'
+import AdvancedSettings, { CHAR_DEFAULTS, WEAPON_DEFAULTS } from './components/AdvancedSettings'
 import './index.css'
 
 const DEFAULT_FORM = {
   total_pulls: 180,
   start_char_pity: 0,
   start_char_guarantee: false,
-  start_lc_pity: 0,
-  start_lc_guarantee: false,
+  start_weapon_pity: 0,
+  start_weapon_guarantee: false,
 }
 
 export default function App() {
   const [form, setForm]                 = useState(DEFAULT_FORM)
   const [desiredChars, setDesiredChars] = useState(1)
-  const [desiredLcs, setDesiredLcs]     = useState(1)
-  const [lcAfter, setLcAfter]           = useState(1)
+  const [desiredWeapons, setDesiredWeapons]     = useState(1)
+  const [weaponAfter, setWeaponAfter]           = useState(1)
   const [loading, setLoading]           = useState(false)
   const [result, setResult]             = useState(null)
   const [error, setError]               = useState(null)
@@ -28,7 +28,7 @@ export default function App() {
   const [sampleSize, setSampleSize]         = useState(500)
   const [full4StarChars, setFull4StarChars] = useState(true)
   const [charPityConfig, setCharPityConfig] = useState({ ...CHAR_DEFAULTS })
-  const [lcPityConfig, setLcPityConfig]     = useState({ ...LC_DEFAULTS })
+  const [weaponPityConfig, setWeaponPityConfig]     = useState({ ...WEAPON_DEFAULTS })
 
   function handleFormChange(key, value) {
     setForm(f => ({ ...f, [key]: value }))
@@ -37,18 +37,18 @@ export default function App() {
   function handleStrategyChange(key, value) {
     if (key === 'desiredChars') {
       setDesiredChars(value)
-      setLcAfter(prev => Math.min(prev, value))
-    } else if (key === 'desiredLcs') {
-      setDesiredLcs(value)
-    } else if (key === 'lcAfter') {
-      setLcAfter(value)
+      setWeaponAfter(prev => Math.min(prev, value))
+    } else if (key === 'desiredWeapons') {
+      setDesiredWeapons(value)
+    } else if (key === 'weaponAfter') {
+      setWeaponAfter(value)
     }
   }
 
   async function handleSubmit(e) {
     e.preventDefault()
-    if (desiredChars === 0 && desiredLcs === 0) {
-      setStrategyError('Please select at least one character copy or one Light Cone.')
+    if (desiredChars === 0 && desiredWeapons === 0) {
+      setStrategyError('Please select at least one character copy or one Weapon.')
       return
     }
     setStrategyError(null)
@@ -56,8 +56,8 @@ export default function App() {
     setError(null)
     setResult(null)
 
-    const showOrdering = desiredChars > 1 && desiredLcs >= 1
-    const strategy = buildStrategy(desiredChars, desiredLcs, showOrdering ? lcAfter : desiredChars)
+    const showOrdering = desiredChars > 1 && desiredWeapons >= 1
+    const strategy = buildStrategy(desiredChars, desiredWeapons, showOrdering ? weaponAfter : desiredChars)
 
     try {
       const data = await analyze({
@@ -65,7 +65,7 @@ export default function App() {
         strategy,
         full_4star_chars: full4StarChars,
         char_pity_config: charPityConfig,
-        lc_pity_config: lcPityConfig,
+        weapon_pity_config: weaponPityConfig,
       })
       setResult(data)
     } catch (err) {
@@ -119,17 +119,17 @@ export default function App() {
 
           <AdvancedSettings
             charConfig={charPityConfig}
-            lcConfig={lcPityConfig}
+            weaponConfig={weaponPityConfig}
             onCharChange={setCharPityConfig}
-            onLcChange={setLcPityConfig}
+            onWeaponChange={setWeaponPityConfig}
           />
 
           <div>
             <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Pull Goal & Strategy</h2>
             <StrategyBuilder
               desiredChars={desiredChars}
-              desiredLcs={desiredLcs}
-              lcAfter={lcAfter}
+              desiredWeapons={desiredWeapons}
+              weaponAfter={weaponAfter}
               onChange={handleStrategyChange}
               validationError={strategyError}
             />
@@ -154,9 +154,9 @@ export default function App() {
               <StatCard label="Success Rate" value={stats.success_rate} highlight />
               <StatCard label="Leftover Pulls (success)" value={stats.avg_leftover_pulls_on_success} />
               <StatCard label="Avg Char Pity" value={stats.avg_pity_char} />
-              <StatCard label="Avg LC Pity" value={stats.avg_pity_lc} />
+              <StatCard label="Avg Weapon Pity" value={stats.avg_pity_weapon} />
               <StatCard label="Char 50/50 Win Rate" value={stats.successes_char_win_rate} />
-              <StatCard label="LC 75/25 Win Rate" value={stats.successes_lc_win_rate} />
+              <StatCard label="Weapon 75/25 Win Rate" value={stats.successes_weapon_win_rate} />
             </div>
 
             {stats.viz_sample?.length > 0 && (
@@ -187,7 +187,7 @@ export default function App() {
                   <div className="bg-red-950/40 border border-red-800/50 rounded-lg px-4 py-3">
                     <div className="text-xs text-red-400 uppercase tracking-wider mb-1">Most Common Failure</div>
                     <div className="text-sm text-red-200">
-                      Ran out after <span className="font-semibold text-white">{stats.most_common_failure_state.chars} char {stats.most_common_failure_state.chars === 1 ? 'copy' : 'copies'}</span> and <span className="font-semibold text-white">{stats.most_common_failure_state.lcs} LC {stats.most_common_failure_state.lcs === 1 ? 'copy' : 'copies'}</span>
+                      Ran out after <span className="font-semibold text-white">{stats.most_common_failure_state.chars} char {stats.most_common_failure_state.chars === 1 ? 'copy' : 'copies'}</span> and <span className="font-semibold text-white">{stats.most_common_failure_state.weapons} weapon {stats.most_common_failure_state.weapons === 1 ? 'copy' : 'copies'}</span>
                       <span className="text-red-400 ml-2">({stats.most_common_failure_state.pct}% of failures)</span>
                     </div>
                   </div>
@@ -204,7 +204,7 @@ export default function App() {
                             style={{ width: `${s.pct}%`, minWidth: '4px', maxWidth: '100%' }}
                           />
                           <span className="text-xs text-slate-400 whitespace-nowrap">
-                            {s.chars}C / {s.lcs}LC — {s.pct}%
+                            {s.chars}C / {s.weapons}W — {s.pct}%
                           </span>
                         </div>
                       ))}
@@ -214,7 +214,7 @@ export default function App() {
 
                 <div className="grid grid-cols-2 gap-3">
                   <StatCard label="Char Win Rate (fails)" value={stats.failure_char_win_rate} />
-                  <StatCard label="LC Win Rate (fails)" value={stats.failure_lc_win_rate} />
+                  <StatCard label="Weapon Win Rate (fails)" value={stats.failure_weapon_win_rate} />
                   <StatCard label="Leftover Pulls (fail)" value={stats.avg_leftover_pulls_on_failure} />
                 </div>
               </div>

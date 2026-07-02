@@ -11,23 +11,23 @@ from config import get_openai_api_key, get_model
 
 def describe_goal(sim_stats):
     chars = sim_stats["desired_characters"]
-    lcs = sim_stats["desired_lightcones"]
+    weapons = sim_stats["desired_weapons"]
 
-    goal_label = f"E{chars - 1}S{lcs}"
+    goal_label = f"E{chars - 1}W{weapons}"
     char_phrase = (
         "one copy of the limited 5★ character"
         if chars == 1 else
         f"{chars} copies of the limited 5★ character"
     )
-    lc_phrase = (
-        "no signature light cone"
-        if lcs == 0 else
-        "one signature 5★ light cone"
-        if lcs == 1 else
-        f"{lcs} signature 5★ light cones"
+    weapon_phrase = (
+        "no signature weapon"
+        if weapons == 0 else
+        "one signature 5★ weapon"
+        if weapons == 1 else
+        f"{weapons} signature 5★ weapons"
     )
 
-    return goal_label, f"{char_phrase} and {lc_phrase}"
+    return goal_label, f"{char_phrase} and {weapon_phrase}"
 
 
 
@@ -50,7 +50,7 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
     if has_failures:
         failure_state_line = (
             f"Most common failure state: ran out after getting {most_common['chars']} of {sim_stats['desired_characters']} "
-            f"character copies and {most_common['lcs']} of {sim_stats['desired_lightcones']} LCs "
+            f"character copies and {most_common['weapons']} of {sim_stats['desired_weapons']} weapons "
             f"({most_common['pct']}% of failures)."
         )
         failure_question = (
@@ -79,29 +79,29 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
         "Player starts with char guarantee — first 5-star on char banner is the featured character, no 50/50 needed."
         if sim_stats.get("start_char_guarantee") else ""
     )
-    lc_guarantee_note = (
-        "Player starts with LC guarantee — first 5-star on LC banner is the featured LC, no 75/25 needed."
-        if sim_stats.get("start_lc_guarantee") else ""
+    weapon_guarantee_note = (
+        "Player starts with Weapon guarantee — first 5-star on weapon banner is the featured weapon, no 75/25 needed."
+        if sim_stats.get("start_weapon_guarantee") else ""
     )
-    guarantee_notes = " ".join(filter(None, [char_guarantee_note, lc_guarantee_note]))
+    guarantee_notes = " ".join(filter(None, [char_guarantee_note, weapon_guarantee_note]))
 
     correlation_lines = f"""
         Factor breakdown (counts out of {s} successes / {f} failures):
         - Early char pity hit (< pull {cs.get('early_pity_threshold', 70)}): {fmt(cs.get('early_char_pity_in_successes'), s)} successes | {fmt(cs.get('early_char_pity_in_failures'), f)} failures
         - Won all needed char 50/50s: {fmt(cs.get('all_5050s_won_in_successes'), s)} successes | {fmt(cs.get('all_5050s_won_in_failures'), f)} failures
-        - Won all needed LC 75/25s: {fmt(cs.get('all_lc_75s_won_in_successes'), s)} successes | {fmt(cs.get('all_lc_75s_won_in_failures'), f)} failures
+        - Won all needed Weapon 75/25s: {fmt(cs.get('all_weapon_75s_won_in_successes'), s)} successes | {fmt(cs.get('all_weapon_75s_won_in_failures'), f)} failures
     """
 
     user_prompt = """
         Goal: {goal_label} — {goal_description}
-        Pulls available: {{initial_pulls}} | Char pity: {{start_char_pity}} | LC pity: {{start_lc_pity}}
+        Pulls available: {{initial_pulls}} | Char pity: {{start_char_pity}} | Weapon pity: {{start_weapon_pity}}
         {guarantee_notes}
 
         Simulation results ({{trials:,}} trials):
         Success rate: {{success_rate}}
         Char 50/50 win rate (success): {{successes_char_win_rate}} | (fail): {{failure_char_win_rate}}
-        LC 75/25 win rate (success): {{successes_lc_win_rate}} | (fail): {{failure_lc_win_rate}}
-        Avg char pity on success: {{avg_pity_char}} | Avg LC pity on success: {{avg_pity_lc}}
+        Weapon 75/25 win rate (success): {{successes_weapon_win_rate}} | (fail): {{failure_weapon_win_rate}}
+        Avg char pity on success: {{avg_pity_char}} | Avg Weapon pity on success: {{avg_pity_weapon}}
         Avg leftover pulls — success: {{avg_leftover_pulls_on_success}} | fail: {{avg_leftover_pulls_on_failure}}
         Avg refunds — success: {{avg_refund_success}} | fail: {{avg_refund_fail}}
         {failure_state_line}

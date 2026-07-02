@@ -1,43 +1,43 @@
-export function buildStrategy(desiredChars, desiredLcs, lcAfter) {
+export function buildStrategy(desiredChars, desiredWeapons, weaponAfter) {
   const strategy = []
 
-  // LC only
+  // Weapon only
   if (desiredChars === 0) {
-    strategy.push({ banner: 'lc', copies: desiredLcs })
+    strategy.push({ banner: 'weapon', copies: desiredWeapons })
     return strategy
   }
 
   // Char only
-  if (desiredLcs === 0) {
+  if (desiredWeapons === 0) {
     strategy.push({ banner: 'char', copies: desiredChars })
     return strategy
   }
 
-  // Single char copy — no ordering question, LC always follows
+  // Single char copy — no ordering question, Weapon always follows
   if (desiredChars === 1) {
     strategy.push({ banner: 'char', copies: 1 })
-    strategy.push({ banner: 'lc', copies: desiredLcs })
+    strategy.push({ banner: 'weapon', copies: desiredWeapons })
     return strategy
   }
 
-  // Multiple chars + LCs — split around lcAfter insertion point
-  const charsBefore = lcAfter
+  // Multiple chars + weapons — split around weaponAfter insertion point
+  const charsBefore = weaponAfter
   const charsAfter  = desiredChars - charsBefore
 
   if (charsBefore > 0) strategy.push({ banner: 'char', copies: charsBefore })
-  strategy.push({ banner: 'lc', copies: 1 })
+  strategy.push({ banner: 'weapon', copies: 1 })
   if (charsAfter > 0)  strategy.push({ banner: 'char', copies: charsAfter })
-  if (desiredLcs > 1)  strategy.push({ banner: 'lc', copies: desiredLcs - 1 })
+  if (desiredWeapons > 1)  strategy.push({ banner: 'weapon', copies: desiredWeapons - 1 })
 
   return strategy
 }
 
-export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onChange, validationError }) {
-  const showOrdering = desiredChars > 1 && desiredLcs >= 1
+export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAfter, onChange, validationError }) {
+  const showOrdering = desiredChars > 1 && desiredWeapons >= 1
 
   const orderingOptions = Array.from({ length: desiredChars - 1 }, (_, i) => ({
     value: i + 1,
-    label: `After E${i} — pull LC before E${i + 1}`,
+    label: `After E${i} — pull weapon before E${i + 1}`,
   }))
 
   return (
@@ -58,15 +58,15 @@ export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onC
         </div>
 
         <div>
-          <label className="block text-sm text-slate-400 mb-1">Light Cone Copies</label>
+          <label className="block text-sm text-slate-400 mb-1">Weapon Copies</label>
           <select
-            value={desiredLcs}
-            onChange={e => onChange('desiredLcs', +e.target.value)}
+            value={desiredWeapons}
+            onChange={e => onChange('desiredWeapons', +e.target.value)}
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
           >
             <option value={0}>None</option>
             {[1,2,3,4,5].map(n => (
-              <option key={n} value={n}>S{n} ({n} {n === 1 ? 'copy' : 'copies'})</option>
+              <option key={n} value={n}>W{n} ({n} {n === 1 ? 'copy' : 'copies'})</option>
             ))}
           </select>
         </div>
@@ -79,17 +79,17 @@ export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onC
       {showOrdering && (
         <div>
           <label className="block text-sm text-slate-400 mb-2">
-            When do you want to pull your first Light Cone?
+            When do you want to pull your first Weapon?
           </label>
           <div className="space-y-2">
             {orderingOptions.map(opt => (
               <label key={opt.value} className="flex items-center gap-3 cursor-pointer group">
                 <input
                   type="radio"
-                  name="lcAfter"
+                  name="weaponAfter"
                   value={opt.value}
-                  checked={lcAfter === opt.value}
-                  onChange={() => onChange('lcAfter', opt.value)}
+                  checked={weaponAfter === opt.value}
+                  onChange={() => onChange('weaponAfter', opt.value)}
                   className="accent-violet-500"
                 />
                 <span className="text-sm text-slate-300 group-hover:text-white transition-colors">
@@ -100,10 +100,10 @@ export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onC
             <label className="flex items-center gap-3 cursor-pointer group">
               <input
                 type="radio"
-                name="lcAfter"
+                name="weaponAfter"
                 value={desiredChars}
-                checked={lcAfter === desiredChars}
-                onChange={() => onChange('lcAfter', desiredChars)}
+                checked={weaponAfter === desiredChars}
+                onChange={() => onChange('weaponAfter', desiredChars)}
                 className="accent-violet-500"
               />
               <span className="text-sm text-slate-300 group-hover:text-white transition-colors">
@@ -114,11 +114,11 @@ export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onC
         </div>
       )}
 
-      {(desiredChars > 0 || desiredLcs > 0) && (
+      {(desiredChars > 0 || desiredWeapons > 0) && (
         <StrategyPreview
           desiredChars={desiredChars}
-          desiredLcs={desiredLcs}
-          lcAfter={lcAfter}
+          desiredWeapons={desiredWeapons}
+          weaponAfter={weaponAfter}
           showOrdering={showOrdering}
         />
       )}
@@ -126,9 +126,9 @@ export default function StrategyBuilder({ desiredChars, desiredLcs, lcAfter, onC
   )
 }
 
-function StrategyPreview({ desiredChars, desiredLcs, lcAfter, showOrdering }) {
-  const strategy = buildStrategy(desiredChars, desiredLcs, showOrdering ? lcAfter : desiredChars)
-  const labels = strategy.map(p => p.banner === 'char' ? `${p.copies} Char` : `${p.copies} LC`)
+function StrategyPreview({ desiredChars, desiredWeapons, weaponAfter, showOrdering }) {
+  const strategy = buildStrategy(desiredChars, desiredWeapons, showOrdering ? weaponAfter : desiredChars)
+  const labels = strategy.map(p => p.banner === 'char' ? `${p.copies} Char` : `${p.copies} Weapon`)
 
   return (
     <div className="flex items-center flex-wrap gap-2 pt-1">
