@@ -112,8 +112,8 @@ export default function App() {
               className="accent-violet-500 w-4 h-4"
             />
             <span className="text-sm text-slate-300">
-              All 4★ characters on this banner are at E6
-              <span className="block text-xs text-slate-500 font-normal">Enable if you have max eidolons — duplicate pulls become refunded pulls</span>
+              All 4★ characters on this banner are at max copies
+              <span className="block text-xs text-slate-500 font-normal">Enable if you have max copies; duplicate pulls become refunded pulls</span>
             </span>
           </label>
 
