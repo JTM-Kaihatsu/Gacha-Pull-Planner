@@ -23,6 +23,11 @@ class PhaseRequest(BaseModel):
     banner: str   # "char" or "lc"
     copies: int
 
+class PityConfig(BaseModel):
+    base_rate: float = 0.006
+    soft_pity_start: int = 73
+    hard_pity: int = 90
+
 class SimRequest(BaseModel):
     total_pulls: int
     start_char_pity: int
@@ -30,6 +35,9 @@ class SimRequest(BaseModel):
     start_lc_pity: int
     start_lc_guarantee: bool = False
     strategy: List[PhaseRequest]
+    full_4star_chars: bool = True
+    char_pity_config: PityConfig = PityConfig()
+    lc_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
 @app.post("/analyze")
 def analyze(req: SimRequest):
@@ -43,6 +51,9 @@ def analyze(req: SimRequest):
             start_char_guarantee=req.start_char_guarantee,
             start_lc_pity=req.start_lc_pity,
             start_lc_guarantee=req.start_lc_guarantee,
+            full_4star_chars=req.full_4star_chars,
+            char_pity_config=req.char_pity_config.model_dump(),
+            lc_pity_config=req.lc_pity_config.model_dump(),
         )
         analysis_text = analyze_sim_result(stats)
 

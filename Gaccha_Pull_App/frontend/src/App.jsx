@@ -5,6 +5,7 @@ import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
 import PullsChart from './components/PullsChart'
+import AdvancedSettings, { CHAR_DEFAULTS, LC_DEFAULTS } from './components/AdvancedSettings'
 import './index.css'
 
 const DEFAULT_FORM = {
@@ -23,8 +24,11 @@ export default function App() {
   const [loading, setLoading]           = useState(false)
   const [result, setResult]             = useState(null)
   const [error, setError]               = useState(null)
-  const [strategyError, setStrategyError] = useState(null)
-  const [sampleSize, setSampleSize]       = useState(500)
+  const [strategyError, setStrategyError]   = useState(null)
+  const [sampleSize, setSampleSize]         = useState(500)
+  const [full4StarChars, setFull4StarChars] = useState(true)
+  const [charPityConfig, setCharPityConfig] = useState({ ...CHAR_DEFAULTS })
+  const [lcPityConfig, setLcPityConfig]     = useState({ ...LC_DEFAULTS })
 
   function handleFormChange(key, value) {
     setForm(f => ({ ...f, [key]: value }))
@@ -56,7 +60,13 @@ export default function App() {
     const strategy = buildStrategy(desiredChars, desiredLcs, showOrdering ? lcAfter : desiredChars)
 
     try {
-      const data = await analyze({ ...form, strategy })
+      const data = await analyze({
+        ...form,
+        strategy,
+        full_4star_chars: full4StarChars,
+        char_pity_config: charPityConfig,
+        lc_pity_config: lcPityConfig,
+      })
       setResult(data)
     } catch (err) {
       setError(err.message)
@@ -72,8 +82,8 @@ export default function App() {
       <div className="max-w-2xl mx-auto px-4 py-10">
 
         <div className="mb-8 text-center">
-          <h1 className="text-3xl font-bold text-white tracking-tight">HSR Pull Planner</h1>
-          <p className="text-slate-400 mt-1 text-sm">Monte Carlo simulation for Honkai: Star Rail banners</p>
+          <h1 className="text-3xl font-bold text-white tracking-tight">Gacha Pull Simulator</h1>
+          <p className="text-slate-400 mt-1 text-sm">Monte Carlo simulation for gacha banner planning</p>
         </div>
 
         <form onSubmit={handleSubmit} className="space-y-6 bg-slate-900 border border-slate-800 rounded-2xl p-6">
@@ -93,6 +103,26 @@ export default function App() {
             <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Current Pity</h2>
             <PityInputs form={form} onChange={handleFormChange} />
           </div>
+
+          <label className="flex items-center gap-3 cursor-pointer select-none">
+            <input
+              type="checkbox"
+              checked={full4StarChars}
+              onChange={e => setFull4StarChars(e.target.checked)}
+              className="accent-violet-500 w-4 h-4"
+            />
+            <span className="text-sm text-slate-300">
+              All 4★ characters on this banner are at E6
+              <span className="block text-xs text-slate-500 font-normal">Enable if you have max eidolons — duplicate pulls become refunded pulls</span>
+            </span>
+          </label>
+
+          <AdvancedSettings
+            charConfig={charPityConfig}
+            lcConfig={lcPityConfig}
+            onCharChange={setCharPityConfig}
+            onLcChange={setLcPityConfig}
+          />
 
           <div>
             <h2 className="text-sm font-semibold text-slate-300 uppercase tracking-wider mb-3">Pull Goal & Strategy</h2>
@@ -144,6 +174,7 @@ export default function App() {
                   vizSample={stats.viz_sample}
                   totalPulls={form.total_pulls}
                   sampleSize={sampleSize}
+                  showRefunds={full4StarChars}
                 />
               </div>
             )}

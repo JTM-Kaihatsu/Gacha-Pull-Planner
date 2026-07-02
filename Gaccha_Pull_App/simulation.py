@@ -11,14 +11,16 @@ import random
 import numpy as np
 import pandas as pd
 
-def character_probability(pity):
-        if pity < 73: return 0.006
-        if pity < 90: return min(1.0, 0.006 + (pity - 72) * 0.05847)
-        return 1.0
+CHAR_PITY_DEFAULTS = {"base_rate": 0.006, "soft_pity_start": 73, "hard_pity": 90}
+LC_PITY_DEFAULTS   = {"base_rate": 0.008, "soft_pity_start": 65, "hard_pity": 80}
 
-def lightcone_probability(pity):
-    if pity < 65: return 0.008
-    if pity < 80: return min(1.0, 0.008 + (pity - 64) * 0.07)
+
+def banner_probability(pity, base_rate, soft_pity_start, hard_pity):
+    if pity < soft_pity_start:
+        return base_rate
+    if pity < hard_pity:
+        increase = (1.0 - base_rate) / (hard_pity - soft_pity_start)
+        return min(1.0, base_rate + (pity - soft_pity_start + 1) * increase)
     return 1.0
 
 
@@ -30,7 +32,9 @@ def simulate_combo_verbose(
     start_lc_pity: int = 0,
     start_lc_guarantee: bool = False,
     full_4star_chars: bool = True,
-    simulate_4star: bool = True
+    simulate_4star: bool = True,
+    char_pity_config: dict = None,
+    lc_pity_config: dict = None,
 ) -> Tuple[bool, int, float, float, dict]:
     """
     Simulates pulls with metadata tracking for verbose analysis.
@@ -45,6 +49,9 @@ def simulate_combo_verbose(
         - leftover (float)
         - metadata (dict)
     """
+    char_cfg = char_pity_config or CHAR_PITY_DEFAULTS
+    lc_cfg   = lc_pity_config   or LC_PITY_DEFAULTS
+
     remaining = total_pulls
     used_pulls = 0
     refunded_pulls = 0.0
@@ -86,7 +93,7 @@ def simulate_combo_verbose(
                 pity_char += 1
                 pity_4star_char += 1
 
-                hit_5star = np.random.rand() < character_probability(pity_char)
+                hit_5star = np.random.rand() < banner_probability(pity_char, **char_cfg)
 
                 if hit_5star:
                     pity_char_trigger = pity_char
@@ -116,7 +123,7 @@ def simulate_combo_verbose(
                 pity_lc += 1
                 pity_4star_lc += 1
 
-                hit_5star = np.random.rand() < lightcone_probability(pity_lc)
+                hit_5star = np.random.rand() < banner_probability(pity_lc, **lc_cfg)
 
                 if hit_5star:
                     pity_lc_trigger = pity_lc
@@ -206,6 +213,9 @@ def run_simulation_verbose(
     start_char_guarantee=False,
     start_lc_pity=0,
     start_lc_guarantee=False,
+    full_4star_chars=True,
+    char_pity_config=None,
+    lc_pity_config=None,
     trials=10000
 ):
     """
@@ -238,7 +248,10 @@ def run_simulation_verbose(
             start_char_pity,
             start_char_guarantee,
             start_lc_pity,
-            start_lc_guarantee
+            start_lc_guarantee,
+            full_4star_chars=full_4star_chars,
+            char_pity_config=char_pity_config,
+            lc_pity_config=lc_pity_config,
         )
 
         all_used.append(used)
