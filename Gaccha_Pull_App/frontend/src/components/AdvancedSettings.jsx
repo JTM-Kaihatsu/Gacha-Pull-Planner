@@ -1,7 +1,7 @@
 const CHAR_DEFAULTS = { base_rate: 0.006, soft_pity_start: 73, hard_pity: 90 }
-const LC_DEFAULTS   = { base_rate: 0.008, soft_pity_start: 65, hard_pity: 80 }
+const WEAPON_DEFAULTS   = { base_rate: 0.008, soft_pity_start: 65, hard_pity: 80 }
 
-export { CHAR_DEFAULTS, LC_DEFAULTS }
+export { CHAR_DEFAULTS, WEAPON_DEFAULTS }
 
 function PityConfigRow({ label, config, onChange, rateMax, pityMax }) {
   return (
@@ -43,7 +43,7 @@ function PityConfigRow({ label, config, onChange, rateMax, pityMax }) {
   )
 }
 
-export default function AdvancedSettings({ charConfig, lcConfig, onCharChange, onLcChange }) {
+export default function AdvancedSettings({ charConfig, weaponConfig, onCharChange, onWeaponChange }) {
   return (
     <details className="group">
       <summary className="text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:text-slate-400 transition-colors">
@@ -61,9 +61,9 @@ export default function AdvancedSettings({ charConfig, lcConfig, onCharChange, o
           pityMax={180}
         />
         <PityConfigRow
-          label="Light Cone Banner"
-          config={lcConfig}
-          onChange={onLcChange}
+          label="Weapon Banner"
+          config={weaponConfig}
+          onChange={onWeaponChange}
           rateMax={50}
           pityMax={180}
         />

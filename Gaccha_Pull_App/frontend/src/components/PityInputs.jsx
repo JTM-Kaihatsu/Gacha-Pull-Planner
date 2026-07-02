@@ -22,22 +22,22 @@ export default function PityInputs({ form, onChange }) {
       </div>
 
       <div>
-        <label className="block text-sm text-slate-400 mb-1">LC Pity <span className="text-slate-500">(0–80)</span></label>
+        <label className="block text-sm text-slate-400 mb-1">Weapon Pity <span className="text-slate-500">(0–80)</span></label>
         <input
           type="number" min={0} max={80}
-          value={form.start_lc_pity}
-          onChange={e => onChange('start_lc_pity', e.target.value === '' ? '' : +e.target.value)}
-          onBlur={e => onChange('start_lc_pity', Math.min(80, Math.max(0, +e.target.value || 0)))}
+          value={form.start_weapon_pity}
+          onChange={e => onChange('start_weapon_pity', e.target.value === '' ? '' : +e.target.value)}
+          onBlur={e => onChange('start_weapon_pity', Math.min(80, Math.max(0, +e.target.value || 0)))}
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
         />
         <label className="flex items-center gap-2 mt-2 text-sm text-slate-400 cursor-pointer">
           <input
             type="checkbox"
-            checked={form.start_lc_guarantee}
-            onChange={e => onChange('start_lc_guarantee', e.target.checked)}
+            checked={form.start_weapon_guarantee}
+            onChange={e => onChange('start_weapon_guarantee', e.target.checked)}
             className="accent-violet-500"
           />
-          Guaranteed next 5★ LC
+          Guaranteed next 5★ Weapon
         </label>
       </div>
     </div>
