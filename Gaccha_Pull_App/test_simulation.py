@@ -9,8 +9,8 @@ def test_structure():
         strategy=[{"banner": "char", "copies": 1}],
         start_char_pity=0,
         start_char_guarantee=False,
-        start_lc_pity=0,
-        start_lc_guarantee=False,
+        start_weapon_pity=0,
+        start_weapon_guarantee=False,
         trials=100,
     )
 
@@ -21,13 +21,13 @@ def test_structure():
     expected_keys = {
         "success_rate",
         "avg_pity_char",
-        "avg_pity_lc",
+        "avg_pity_weapon",
         "successes_char_win_rate",
-        "successes_lc_win_rate",
+        "successes_weapon_win_rate",
         "avg_leftover_pulls_on_success",
         "avg_refund_success",
         "failure_char_win_rate",
-        "failure_lc_win_rate",
+        "failure_weapon_win_rate",
         "avg_leftover_pulls_on_failure",
         "avg_refund_fail"
     }
