@@ -185,7 +185,7 @@ VIZ_SAMPLE_SIZE = 1000
 
 
 def _build_phase_labels(strategy):
-    """Returns a label per strategy phase: E0/E1/E2... for char, W1/W2... for weapon."""
+    """Returns a label per strategy phase: C0/C1/C2... for char, W1/W2... for weapon."""
     char_idx = 0
     weapon_idx = 0
     labels = []
@@ -193,9 +193,9 @@ def _build_phase_labels(strategy):
         n = phase["copies"]
         if phase["banner"] == "char":
             if n == 1:
-                labels.append(f"E{char_idx}")
+                labels.append(f"C{char_idx}")
             else:
-                labels.append(f"E{char_idx}–E{char_idx + n - 1}")
+                labels.append(f"C{char_idx}–C{char_idx + n - 1}")
             char_idx += n
         else:
             if n == 1:

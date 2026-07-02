@@ -27,7 +27,7 @@ The main input screen. Player fills in their current state and pull goal, then s
 - Character Guarantee *(toggle)*
 - Weapon Pity *(0–80)*
 - Weapon Guarantee *(toggle)*
-- How many character copies? *(1–6, maps to E0–E5)*
+- How many character copies? *(1–6, maps to C0–C5)*
 - How many Weapons? *(0–5, maps to none through W5)*
 - **[Conditional]** Weapon ordering question — see Strategy Logic below
 
@@ -74,9 +74,9 @@ Radio buttons generated dynamically based on `desired_chars`:
 
 | Option | Meaning |
 |---|---|
-| After E0 | Pull Weapon before going for E1 |
-| After E1 | Pull Weapon before going for E2 |
-| After E2 | Pull Weapon before going for E3 |
+| After C0 | Pull Weapon before going for C1 |
+| After C1 | Pull Weapon before going for C2 |
+| After C2 | Pull Weapon before going for C3 |
 | *(continues to second-to-last copy)* | … |
 
 The user picks the insertion point for their **first** Weapon copy.
@@ -85,8 +85,8 @@ The user picks the insertion point for their **first** Weapon copy.
 
 If `desired_weapons > 1`, all copies beyond the first are **always appended to the end** of the strategy, after all character copies are obtained. The ordering question only governs where the first Weapon sits.
 
-> *Example: 3 char copies, 3 Weapon copies, first Weapon after E0*
-> → E0 → W1 → E1 → E2 → W2 → W3
+> *Example: 3 char copies, 3 Weapon copies, first Weapon after C0*
+> → C0 → W1 → C1 → C2 → W2 → W3
 
 ### Step 5 — Strategy Array Mapping
 
@@ -95,13 +95,13 @@ If `desired_weapons > 1`, all copies beyond the first are **always appended to t
 | 1 | 0 | — | `[{char,1}]` |
 | 1 | 1 | — | `[{char,1},{weapon,1}]` |
 | 1 | 2 | — | `[{char,1},{weapon,1},{weapon,1}]` |
-| 2 | 1 | After E0 | `[{char,1},{weapon,1},{char,1}]` |
-| 2 | 1 | After E1 | `[{char,2},{weapon,1}]` |
-| 3 | 1 | After E0 | `[{char,1},{weapon,1},{char,2}]` |
-| 3 | 1 | After E1 | `[{char,2},{weapon,1},{char,1}]` |
-| 3 | 1 | After E2 | `[{char,3},{weapon,1}]` |
-| 3 | 2 | After E0 | `[{char,1},{weapon,1},{char,2},{weapon,1}]` |
-| 3 | 3 | After E1 | `[{char,2},{weapon,1},{char,1},{weapon,2}]` |
+| 2 | 1 | After C0 | `[{char,1},{weapon,1},{char,1}]` |
+| 2 | 1 | After C1 | `[{char,2},{weapon,1}]` |
+| 3 | 1 | After C0 | `[{char,1},{weapon,1},{char,2}]` |
+| 3 | 1 | After C1 | `[{char,2},{weapon,1},{char,1}]` |
+| 3 | 1 | After C2 | `[{char,3},{weapon,1}]` |
+| 3 | 2 | After C0 | `[{char,1},{weapon,1},{char,2},{weapon,1}]` |
+| 3 | 3 | After C1 | `[{char,2},{weapon,1},{char,1},{weapon,2}]` |
 
 **Rule:** `weapon insertion point` splits char copies into two groups. Remaining Weapon copies (`desired_weapons - 1`) are appended at the end.
 

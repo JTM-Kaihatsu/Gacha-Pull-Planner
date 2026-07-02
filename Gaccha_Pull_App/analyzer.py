@@ -13,7 +13,7 @@ def describe_goal(sim_stats):
     chars = sim_stats["desired_characters"]
     weapons = sim_stats["desired_weapons"]
 
-    goal_label = f"E{chars - 1}W{weapons}"
+    goal_label = f"C{chars - 1}W{weapons}"
     char_phrase = (
         "one copy of the limited 5★ character"
         if chars == 1 else

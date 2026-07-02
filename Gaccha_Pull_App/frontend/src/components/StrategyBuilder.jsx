@@ -37,7 +37,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
 
   const orderingOptions = Array.from({ length: desiredChars - 1 }, (_, i) => ({
     value: i + 1,
-    label: `After E${i} — pull weapon before E${i + 1}`,
+    label: `After C${i} — pull weapon before C${i + 1}`,
   }))
 
   return (
@@ -52,7 +52,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
           >
             <option value={0}>None</option>
             {[1,2,3,4,5,6].map(n => (
-              <option key={n} value={n}>E{n-1} ({n} {n === 1 ? 'copy' : 'copies'})</option>
+              <option key={n} value={n}>C{n-1} ({n} {n === 1 ? 'copy' : 'copies'})</option>
             ))}
           </select>
         </div>
@@ -107,7 +107,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
                 className="accent-violet-500"
               />
               <span className="text-sm text-slate-300 group-hover:text-white transition-colors">
-                After E{desiredChars - 1} — pull all characters first
+                After C{desiredChars - 1} — pull all characters first
               </span>
             </label>
           </div>

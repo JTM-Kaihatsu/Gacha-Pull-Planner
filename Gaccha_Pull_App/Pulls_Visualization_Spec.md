@@ -9,7 +9,7 @@
 
 ## Overview
 
-A stacked bar chart showing a sample of simulation runs. Each bar is one run. Bars are stacked by pull phase (E0, W1, E1, etc.), with refunds shown as a distinct sub-segment within each phase. Success and failure runs are visually separated.
+A stacked bar chart showing a sample of simulation runs. Each bar is one run. Bars are stacked by pull phase (C0, W1, C1, etc.), with refunds shown as a distinct sub-segment within each phase. Success and failure runs are visually separated.
 
 ---
 
@@ -46,12 +46,12 @@ Each bar represents one simulation run, stacked bottom-to-top in pull order:
 
 ```
 ┌─────────────┐  ← total pulls used
-│  E1 refunds │  (amber, hatched)
-│  E1 pulls   │  (violet)
+│  C1 refunds │  (amber, hatched)
+│  C1 pulls   │  (violet)
 │  W1 refunds │  (orange, hatched)
 │  W1 pulls   │  (amber)
-│  E0 refunds │  (violet, hatched)
-│  E0 pulls   │  (violet)
+│  C0 refunds │  (violet, hatched)
+│  C0 pulls   │  (violet)
 └─────────────┘
 ```
 
@@ -91,7 +91,7 @@ Each phase in the strategy produces:
 }
 ```
 
-Refunds are treated as **immediately recycled within the phase** — if you got 8 refund pulls while grinding E0, those 8 pulls are shown as a sub-block of the E0 segment. This supports claims like "20 of the 80 pulls for E1 were refunds."
+Refunds are treated as **immediately recycled within the phase** — if you got 8 refund pulls while grinding C0, those 8 pulls are shown as a sub-block of the C0 segment. This supports claims like "20 of the 80 pulls for C1 were refunds."
 
 ### Sample storage
 
@@ -107,16 +107,16 @@ Sampling strategy: **reservoir sampling** — randomly replace entries as trials
     "success": true,
     "total_pulls_used": 187,
     "phases": [
-      {"label": "E0", "banner": "char", "pulls_used": 74, "refunds": 8.0},
+      {"label": "C0", "banner": "char", "pulls_used": 74, "refunds": 8.0},
       {"label": "W1", "banner": "weapon",   "pulls_used": 68, "refunds": 4.4},
-      {"label": "E1", "banner": "char", "pulls_used": 45, "refunds": 5.0}
+      {"label": "C1", "banner": "char", "pulls_used": 45, "refunds": 5.0}
     ]
   },
   ...
 ]
 ```
 
-Phase labels are derived from the strategy: char phases are labeled E0, E1, E2… (incrementing per copy obtained); Weapon phases are labeled W1, W2… The label reflects what was *completed* in that phase, not just the banner type.
+Phase labels are derived from the strategy: char phases are labeled C0, C1, C2… (incrementing per copy obtained); Weapon phases are labeled W1, W2… The label reflects what was *completed* in that phase, not just the banner type.
 
 ---
 
@@ -145,7 +145,7 @@ No D3 needed at this stage.
 1. Sort `vizSample`: successes ascending by `total_pulls_used`, then failures descending
 2. For each run, build a flat data object with one key per phase segment:
    ```js
-   { runId: 0, success: true, E0_net: 66, E0_refund: 8, S1_net: 63.6, S1_refund: 4.4, ... }
+   { runId: 0, success: true, C0_net: 66, C0_refund: 8, W1_net: 63.6, W1_refund: 4.4, ... }
    ```
 3. Render a `<BarChart>` with one `<Bar>` per segment key, stacked
 4. Color each bar by banner type; use hatching or opacity for refund segments
