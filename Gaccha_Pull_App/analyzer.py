@@ -39,7 +39,7 @@ def analyze_sim_result(sim_stats, trials=50000, model: str = None):
     goal_label, goal_description = describe_goal(sim_stats)
 
     system_prompt = (
-        "You are a blunt, no-fluff Honkai Star Rail pull advisor. "
+        "You are a blunt, no-fluff gacha pull advisor. "
         "Give short, direct answers. No markdown, no headers, no bullet points. "
         "The reader knows how pity works — skip the basics and get to the point."
     )

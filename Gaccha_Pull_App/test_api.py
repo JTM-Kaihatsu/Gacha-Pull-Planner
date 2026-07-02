@@ -17,7 +17,11 @@ def test_endpoint(monkeypatch):
         "failure_char_win_rate": 0.0,
         "failure_lc_win_rate": 0.0,
         "avg_leftover_pulls_on_failure": 0,
-        "avg_refund_fail": 0
+        "avg_refund_fail": 0,
+        "most_common_failure_state": None,
+        "failure_state_distribution": [],
+        "correlation_stats": {},
+        "viz_sample": [],
     }
 
     # ------------------------------------------------------------------
