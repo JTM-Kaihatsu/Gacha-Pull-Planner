@@ -38,7 +38,7 @@ function getPhaseKeys(vizSample) {
   return phases.map(p => ({ label: p.label, banner: p.banner }))
 }
 
-const CustomTooltip = ({ active, payload, label }) => {
+const CustomTooltip = ({ active, payload, label, showRefunds = true }) => {
   if (!active || !payload?.length) return null
   const run = payload[0]?.payload?._run
   if (!run) return null
@@ -57,7 +57,7 @@ const CustomTooltip = ({ active, payload, label }) => {
           <span className="text-slate-300 ml-1">
             {p.pulls_used} pulls
           </span>
-          {p.refunds > 0 && (
+          {showRefunds && p.refunds > 0 && (
             <span className="text-slate-500 ml-1">
               ({p.refunds.toFixed(1)} refunds)
             </span>
@@ -68,7 +68,7 @@ const CustomTooltip = ({ active, payload, label }) => {
   )
 }
 
-export default function PullsChart({ vizSample, totalPulls, sampleSize = 500 }) {
+export default function PullsChart({ vizSample, totalPulls, sampleSize = 500, showRefunds = true }) {
   if (!vizSample?.length) return null
 
   // Slice proportionally: keep success/failure ratio intact
@@ -94,9 +94,9 @@ export default function PullsChart({ vizSample, totalPulls, sampleSize = 500 }) 
       </div>
       <div className="flex gap-4 mb-3 text-xs text-slate-400">
         <span><span className="inline-block w-2 h-2 rounded-sm bg-violet-600 mr-1" />Char pulls</span>
-        <span><span className="inline-block w-2 h-2 rounded-sm bg-violet-400 mr-1" />Char refunds</span>
+        {showRefunds && <span><span className="inline-block w-2 h-2 rounded-sm bg-violet-400 mr-1" />Char refunds</span>}
         <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-600 mr-1" />LC pulls</span>
-        <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-400 mr-1" />LC refunds</span>
+        {showRefunds && <span><span className="inline-block w-2 h-2 rounded-sm bg-amber-400 mr-1" />LC refunds</span>}
         <span><span className="inline-block w-3 h-2 border border-red-500 mr-1" />Failed run</span>
       </div>
 
@@ -110,7 +110,7 @@ export default function PullsChart({ vizSample, totalPulls, sampleSize = 500 }) 
             axisLine={false}
             width={32}
           />
-          <Tooltip content={<CustomTooltip />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
+          <Tooltip content={<CustomTooltip showRefunds={showRefunds} />} cursor={{ fill: 'rgba(255,255,255,0.04)' }} />
           <ReferenceLine
             y={totalPulls}
             stroke="#ef4444"
