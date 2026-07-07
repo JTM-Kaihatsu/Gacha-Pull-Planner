@@ -36,6 +36,7 @@ class SimRequest(BaseModel):
     start_weapon_guarantee: bool = False
     strategy: List[PhaseRequest]
     full_4star_chars: bool = True
+    enable_ai_analysis: bool = False
     char_pity_config: PityConfig = PityConfig()
     weapon_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
@@ -55,7 +56,8 @@ def analyze(req: SimRequest):
             char_pity_config=req.char_pity_config.model_dump(),
             weapon_pity_config=req.weapon_pity_config.model_dump(),
         )
-        analysis_text = analyze_sim_result(stats)
+        # Only run the (paid) LLM interpretation when explicitly enabled.
+        analysis_text = analyze_sim_result(stats) if req.enable_ai_analysis else None
 
         return {
             "analysis_text": analysis_text,
