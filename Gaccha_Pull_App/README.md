@@ -2,8 +2,8 @@
 
 A Monte Carlo planning tool for gacha games. Tell it how many pulls you have, your
 current pity, and what you're trying to pull for — it runs 10,000 simulated attempts
-and tells you your odds of success, what a typical failure looks like, and a blunt,
-plain-English verdict on whether your goal is realistic.
+and tells you your odds of success, what a typical failure looks like, and — if you
+opt in — a blunt, plain-English AI verdict on whether your goal is realistic.
 
 Game-agnostic by design: the pity curves are fully configurable, so the same engine
 models Honkai: Star Rail, Genshin Impact, Zenless Zone Zero, and similar dual-banner
@@ -34,9 +34,10 @@ spreadsheet.
 - **Strategy-aware.** Pull order matters because pity carries across a banner. The
   tool models an ordered strategy (e.g. character → weapon → character) rather than
   treating goals as independent.
-- **A verdict, in plain English.** The stats are piped through an LLM prompt tuned to
-  answer one question like a friend would: *doable, tight, or a stretch — and how many
-  more pulls would close the gap?*
+- **An optional verdict, in plain English.** Opt in and the stats are piped through an
+  LLM prompt tuned to answer one question like a friend would: *doable, tight, or a
+  stretch — and how many more pulls would close the gap?* It's **off by default** (via
+  Advanced Settings), so the core simulation and chart run with zero API cost.
 
 **Key product/technical decisions.**
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
@@ -90,7 +91,7 @@ The app is two processes: the FastAPI backend (port 8000) and the Vite frontend
 
 ```bash
 pip install -r requirements.txt
-echo "OPENAI_API_KEY=sk-..." > .env      # required for the /analyze verdict
+echo "OPENAI_API_KEY=sk-..." > .env      # optional — only needed if you enable the AI verdict
 uvicorn main:app --reload
 ```
 
@@ -129,6 +130,7 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
     { "banner": "char",   "copies": 1 }
   ],
   "full_4star_chars": true,
+  "enable_ai_analysis": false,
   "char_pity_config":   { "base_rate": 0.006, "soft_pity_start": 73, "hard_pity": 90 },
   "weapon_pity_config": { "base_rate": 0.008, "soft_pity_start": 65, "hard_pity": 80 }
 }
@@ -143,6 +145,7 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 | `start_weapon_guarantee` | bool | Next 5★ weapon is guaranteed the featured one (no 75/25) |
 | `strategy` | array | **Ordered** phases: each `{ "banner": "char" \| "weapon", "copies": int }`. Order matters — pity carries across phases. |
 | `full_4star_chars` | bool | If true, duplicate 4★ characters are treated as refunded pulls |
+| `enable_ai_analysis` | bool | Default `false`. If true, runs the OpenAI verdict and populates `analysis_text`; otherwise the analyzer is skipped (no API call) and `analysis_text` is `null` |
 | `char_pity_config` | object | `base_rate`, `soft_pity_start`, `hard_pity` for the character banner |
 | `weapon_pity_config` | object | Same three fields for the weapon banner |
 
@@ -174,7 +177,7 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `analysis_text` | string | LLM-generated plain-English verdict |
+| `analysis_text` | string\|null | LLM-generated plain-English verdict; `null` unless `enable_ai_analysis` was `true` |
 | `trials` | int | Number of Monte Carlo trials (10,000) |
 | `success_rate` | string | % of trials that met the full goal |
 | `avg_pity_char` / `avg_pity_weapon` | float | Avg pity at which the 5★ hit, on successful runs |
@@ -198,15 +201,29 @@ pytest
 ```
 
 Covers the simulation output structure, the analyzer (mocked), and the `/analyze`
-endpoint contract (mocked).
+endpoint contract (both the AI-enabled and default AI-disabled paths, mocked).
+
+---
+
+## Deployment
+
+The app deploys as two pieces: the FastAPI backend on **Render** and the static
+React/Vite frontend on **Vercel**, both on free tiers. Config lives in
+[`render.yaml`](render.yaml) and [`frontend/vercel.json`](frontend/vercel.json); see
+**[DEPLOY.md](DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
+`VITE_API_URL` wiring, and cost notes).
+
+Because the AI verdict is off by default, a public demo runs the full simulation and
+chart **without any OpenAI calls** — so hosting is effectively free.
 
 ---
 
 ## Notes & limitations
 
-- The OpenAI key lives in `.env` (gitignored) — never commit it. `/analyze` calls the
-  OpenAI API, so it needs a valid key to return the verdict; the raw simulation stats
-  do not.
+- The AI verdict is **opt-in and off by default**. `/analyze` only calls the OpenAI
+  API when `enable_ai_analysis` is `true`; the simulation, stats, and chart never
+  require a key. The OpenAI key lives in `.env` (gitignored) — never commit it. If you
+  expose a public demo with the AI verdict enabled, set a spend cap on your OpenAI key.
 - Pity/guarantee/refund rates model common gacha systems but are simplifications;
   tune the pity configs to match a specific game.
 - No frontend test suite yet (see *What I'd do next*).
