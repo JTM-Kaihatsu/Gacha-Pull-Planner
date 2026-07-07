@@ -105,3 +105,74 @@ def test_ai_analysis_disabled_by_default(monkeypatch):
     assert response.status_code == 200
     assert response.json()["analysis_text"] is None
     assert called["analyzer"] is False
+
+
+def _valid_payload():
+    return {
+        "total_pulls": 50,
+        "start_char_pity": 0,
+        "start_char_guarantee": False,
+        "start_weapon_pity": 0,
+        "start_weapon_guarantee": False,
+        "strategy": [{"banner": "char", "copies": 1}],
+    }
+
+
+def test_missing_required_field_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    del payload["total_pulls"]
+    assert client.post("/analyze", json=payload).status_code == 422
+
+
+def test_bad_strategy_item_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["strategy"] = [{"banner": "char"}]  # missing 'copies'
+    assert client.post("/analyze", json=payload).status_code == 422
+
+
+def test_analyzer_error_surfaces_as_500(monkeypatch):
+    dummy_stats = {
+        "trials": 1, "success_rate": "0.00%", "avg_pity_char": None, "avg_pity_weapon": None,
+        "successes_char_win_rate": "0%", "successes_weapon_win_rate": "0%",
+        "avg_leftover_pulls_on_success": 0, "avg_refund_success": 0,
+        "failure_char_win_rate": "0%", "failure_weapon_win_rate": "0%",
+        "avg_leftover_pulls_on_failure": 0, "avg_refund_fail": 0,
+        "most_common_failure_state": None, "failure_state_distribution": [],
+        "correlation_stats": {}, "viz_sample": [],
+    }
+
+    def _boom(*_, **__):
+        raise RuntimeError("openai down")
+
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: dummy_stats)
+    monkeypatch.setattr(main, "analyze_sim_result", _boom)
+
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["enable_ai_analysis"] = True
+
+    response = client.post("/analyze", json=payload)
+    assert response.status_code == 500
+    assert "openai down" in response.json()["detail"]
+
+
+def test_cors_allows_configured_origin(monkeypatch):
+    dummy_stats = {
+        "trials": 1, "success_rate": "0.00%", "avg_pity_char": None, "avg_pity_weapon": None,
+        "successes_char_win_rate": "0%", "successes_weapon_win_rate": "0%",
+        "avg_leftover_pulls_on_success": 0, "avg_refund_success": 0,
+        "failure_char_win_rate": "0%", "failure_weapon_win_rate": "0%",
+        "avg_leftover_pulls_on_failure": 0, "avg_refund_fail": 0,
+        "most_common_failure_state": None, "failure_state_distribution": [],
+        "correlation_stats": {}, "viz_sample": [],
+    }
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: dummy_stats)
+
+    client = TestClient(main.app)
+    response = client.post(
+        "/analyze", json=_valid_payload(),
+        headers={"Origin": "http://localhost:5173"},
+    )
+    assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
