@@ -1,0 +1,23 @@
+# Render deployment blueprint for the FastAPI backend.
+#
+# Easiest path: in the Render dashboard, New + → Web Service, connect this repo,
+# and set "Root Directory" to  Gaccha_Pull_App  (so the commands below run from
+# the project folder). Then add the env vars under the Environment tab.
+#
+# Alternatively, use this file as a Blueprint (place it at the repo root, or point
+# Render's Blueprint at this directory).
+services:
+  - type: web
+    name: gacha-pull-simulator-api
+    runtime: python
+    plan: free                 # free tier spins down after ~15 min idle (slow first request)
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /docs
+    envVars:
+      - key: OPENAI_API_KEY
+        sync: false            # set in the dashboard; only needed if the AI toggle is used
+      - key: ALLOWED_ORIGINS
+        sync: false            # your deployed frontend origin, e.g. https://your-app.vercel.app
+      - key: OPENAI_MODEL
+        value: gpt-4o
