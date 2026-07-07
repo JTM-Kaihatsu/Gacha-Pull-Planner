@@ -1,1 +1,8 @@
-fastapi uvicorn openai numpy python-dotenv pytest httpx
+fastapi
+uvicorn
+openai
+numpy
+pandas
+python-dotenv
+pytest
+httpx
