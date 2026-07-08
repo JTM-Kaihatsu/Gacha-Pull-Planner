@@ -26,9 +26,15 @@ class TestModel:
 
 
 class TestAllowedOrigins:
-    def test_default_single_origin(self, monkeypatch):
+    def test_default_includes_local_and_deployed(self, monkeypatch):
         monkeypatch.delenv("ALLOWED_ORIGINS", raising=False)
-        assert config.get_allowed_origins() == ["http://localhost:5173"]
+        origins = config.get_allowed_origins()
+        assert "http://localhost:5173" in origins
+        assert "https://gacha-pull-planner.vercel.app" in origins
+
+    def test_empty_entries_are_dropped(self, monkeypatch):
+        monkeypatch.setenv("ALLOWED_ORIGINS", "https://a.com, ,")
+        assert config.get_allowed_origins() == ["https://a.com"]
 
     def test_comma_separated_list_is_split_and_trimmed(self, monkeypatch):
         monkeypatch.setenv(
