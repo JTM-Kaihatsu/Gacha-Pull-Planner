@@ -1,13 +1,13 @@
 
 # CONTRIBUTING.md: Developer Setup & File Structure
 
-Welcome to the **HSR Simulation API** codebase! This doc explains the structure, responsibilities of each file, and how to securely run and contribute to the backend.
+Welcome to the **Gacha Pull Simulator** codebase! This doc explains the structure, responsibilities of each file, and how to securely run and contribute to the backend.
 
 ---
 
 ## Project Overview
 
-This repo simulates gacha pulls in **Honkai: Star Rail**, then generates an AI-powered analysis using OpenAI’s GPT models.
+This repo simulates gacha pulls for configurable gacha banners, then generates an AI-powered analysis using OpenAI’s GPT models.
 
 - Built with **FastAPI** for a REST API
 - Uses **NumPy** for simulation
@@ -114,8 +114,8 @@ See `README.md` for full request/response schema.
 ## Getting Started Recap
 
 ```bash
-git clone HSR_Pull_Planner
-cd hsr_sim_api
+git clone Gacha-Pull-Planner
+cd Gacha_Pull_App
 cp .env.example .env  # then add your OpenAI key
 pip install fastapi uvicorn openai numpy python-dotenv
 uvicorn main:app --reload

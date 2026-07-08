@@ -1,6 +1,6 @@
 
 """simulation.py
-Core gacha‑pull simulation logic for Honkai: Star Rail.
+Core gacha‑pull simulation logic.
 
 All functions are pure and have no external side‑effects, which
 makes them easy to unit‑test and reuse.

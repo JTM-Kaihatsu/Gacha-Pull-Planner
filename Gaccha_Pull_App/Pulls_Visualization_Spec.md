@@ -1,5 +1,5 @@
 
-# HSR Pull Planner — Pulls Visualization Spec
+# Gacha Pull Simulator — Pulls Visualization Spec
 
 **Version:** 1.0
 **Status:** Proposed
