@@ -10,8 +10,8 @@ models Honkai: Star Rail, Genshin Impact, Zenless Zone Zero, and similar dual-ba
 (character + weapon) systems.
 
 > **Live demo:** _TODO — add deployed URL here_
-> **Screenshot:** _TODO — add a screenshot/GIF of the results view + distribution chart_
-<!-- ![Gacha Pull Simulator](docs/screenshot.png) -->
+
+![Gacha Pull Simulator — success rate, per-banner stats, and the pull-distribution chart](docs/results.png)
 
 ---
 
@@ -51,6 +51,34 @@ spreadsheet.
 **What I'd do next.** Persisted scenarios and shareable result links; per-game presets
 so users don't hand-enter pity curves; replacing the LLM verdict with a cheaper
 templated summary for the common cases; and frontend tests around the chart.
+
+---
+
+## Screenshots
+
+**Set up your scenario** — pulls, current pity, the 4★-refund flag, and an ordered
+character/weapon pull strategy:
+
+![Input form and strategy builder](docs/input-form.png)
+
+**Configurable pity** — override base rate, soft-pity start, and hard pity per banner
+to match any game (this is what makes the engine game-agnostic):
+
+![Advanced settings — configurable pity curves](docs/advanced-settings.png)
+
+**Pull-distribution chart** — every sampled run as a stacked bar (successes on the
+left, failures on the right), with a per-phase breakdown on hover:
+
+![Pull distribution chart with per-run tooltip](docs/chart-tooltip.png)
+
+**Optional AI verdict** — a blunt, plain-English read on your odds (opt-in, off by
+default):
+
+![AI analysis](docs/ai-analysis.png)
+
+**Failure analysis** — the most common ways a run falls short:
+
+![Failed run stats](docs/failure-stats.png)
 
 ---
 
