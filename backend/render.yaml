@@ -1,7 +1,7 @@
 # Render deployment blueprint for the FastAPI backend.
 #
 # Easiest path: in the Render dashboard, New + → Web Service, connect this repo,
-# and set "Root Directory" to  Gaccha_Pull_App  (so the commands below run from
+# and set "Root Directory" to  backend  (so the commands below run from
 # the project folder). Then add the env vars under the Environment tab.
 #
 # Alternatively, use this file as a Blueprint (place it at the repo root, or point

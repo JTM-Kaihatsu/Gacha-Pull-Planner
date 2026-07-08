@@ -12,7 +12,7 @@ systems.
 > **▶ Live demo: [gacha-pull-planner.vercel.app](https://gacha-pull-planner.vercel.app)**
 > _The backend runs on a free tier and sleeps when idle, so the first Simulate after a quiet period can take ~30–60s to wake — subsequent runs are instant._
 
-![Gacha Pull Simulator — success rate, per-banner stats, and the pull-distribution chart](Gaccha_Pull_App/docs/results.png)
+![Gacha Pull Simulator — success rate, per-banner stats, and the pull-distribution chart](docs/results.png)
 
 ---
 
@@ -60,26 +60,26 @@ templated summary for the common cases; and frontend tests around the chart.
 **Set up your scenario** — pulls, current pity, the 4★-refund flag, and an ordered
 character/weapon pull strategy:
 
-![Input form and strategy builder](Gaccha_Pull_App/docs/input-form.png)
+![Input form and strategy builder](docs/input-form.png)
 
 **Configurable pity** — override base rate, soft-pity start, and hard pity per banner
 to match any game (this is what makes the engine game-agnostic):
 
-![Advanced settings — configurable pity curves](Gaccha_Pull_App/docs/advanced-settings.png)
+![Advanced settings — configurable pity curves](docs/advanced-settings.png)
 
 **Pull-distribution chart** — every sampled run as a stacked bar (successes on the
 left, failures on the right), with a per-phase breakdown on hover:
 
-![Pull distribution chart with per-run tooltip](Gaccha_Pull_App/docs/chart-tooltip.png)
+![Pull distribution chart with per-run tooltip](docs/chart-tooltip.png)
 
 **Optional AI verdict** — a blunt, plain-English read on your odds (opt-in, off by
 default):
 
-![AI analysis](Gaccha_Pull_App/docs/ai-analysis.png)
+![AI analysis](docs/ai-analysis.png)
 
 **Failure analysis** — the most common ways a run falls short:
 
-![Failed run stats](Gaccha_Pull_App/docs/failure-stats.png)
+![Failed run stats](docs/failure-stats.png)
 
 ---
 
@@ -116,12 +116,12 @@ React + Vite frontend  ──POST /analyze──▶  FastAPI backend
 The app is two processes: the FastAPI backend (port 8000) and the Vite frontend
 (port 5173), which calls the backend.
 
-The project lives in the [`Gaccha_Pull_App/`](Gaccha_Pull_App/) directory.
+The backend lives in [`backend/`](backend/) and the frontend in [`frontend/`](frontend/).
 
-**1. Backend** — from `Gaccha_Pull_App/`:
+**1. Backend** — from `backend/`:
 
 ```bash
-cd Gaccha_Pull_App
+cd backend
 pip install -r requirements.txt
 echo "OPENAI_API_KEY=sk-..." > .env      # optional — only needed if you enable the AI verdict
 uvicorn main:app --reload
@@ -132,7 +132,7 @@ Interactive API docs are then available at http://localhost:8000/docs (Swagger U
 **2. Frontend** — in a second terminal:
 
 ```bash
-cd Gaccha_Pull_App/frontend
+cd frontend
 npm install
 npm run dev
 ```
@@ -241,8 +241,8 @@ endpoint contract (both the AI-enabled and default AI-disabled paths, mocked).
 
 The app deploys as two pieces: the FastAPI backend on **Render** and the static
 React/Vite frontend on **Vercel**, both on free tiers. Config lives in
-[`render.yaml`](Gaccha_Pull_App/render.yaml) and [`frontend/vercel.json`](Gaccha_Pull_App/frontend/vercel.json); see
-**[DEPLOY.md](Gaccha_Pull_App/DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
+[`render.yaml`](backend/render.yaml) and [`frontend/vercel.json`](frontend/vercel.json); see
+**[DEPLOY.md](DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
 `VITE_API_URL` wiring, and cost notes).
 
 Because the AI verdict is off by default, a public demo runs the full simulation and

@@ -115,7 +115,7 @@ See `README.md` for full request/response schema.
 
 ```bash
 git clone Gacha-Pull-Planner
-cd Gacha_Pull_App
+cd backend
 cp .env.example .env  # then add your OpenAI key
 pip install fastapi uvicorn openai numpy python-dotenv
 uvicorn main:app --reload
