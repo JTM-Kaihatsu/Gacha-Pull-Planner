@@ -224,7 +224,9 @@ export default function App() {
               </div>
             </details>
 
-            {result.analysis_text && <AnalysisBlock text={result.analysis_text} />}
+            {result.analysis_status && result.analysis_status !== 'disabled' && (
+              <AnalysisBlock text={result.analysis_text} status={result.analysis_status} />
+            )}
           </div>
         )}
       </div>
