@@ -13,8 +13,8 @@ first, then the frontend, then point them at each other.
 ## 1. Backend → Render
 
 1. **New + → Web Service**, connect this GitHub repo.
-2. Set **Root Directory** to `Gaccha_Pull_App`.
-3. Render should auto-fill from [`render.yaml`](render.yaml); otherwise set:
+2. Set **Root Directory** to `backend`.
+3. Render should auto-fill from [`render.yaml`](backend/render.yaml); otherwise set:
    - **Build Command:** `pip install -r requirements.txt`
    - **Start Command:** `uvicorn main:app --host 0.0.0.0 --port $PORT`
 4. Under **Environment**, add:
@@ -32,7 +32,7 @@ first, then the frontend, then point them at each other.
 ## 2. Frontend → Vercel
 
 1. **Add New → Project**, import this repo.
-2. Set **Root Directory** to `Gaccha_Pull_App/frontend`. Vercel auto-detects Vite
+2. Set **Root Directory** to `frontend`. Vercel auto-detects Vite
    (build `npm run build`, output `dist`); [`vercel.json`](frontend/vercel.json)
    pins this and adds the SPA rewrite.
 3. Add an **Environment Variable**:
