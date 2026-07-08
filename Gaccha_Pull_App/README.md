@@ -9,7 +9,8 @@ Game-agnostic by design: the pity curves are fully configurable, so the same eng
 models Honkai: Star Rail, Genshin Impact, Zenless Zone Zero, and similar dual-banner
 (character + weapon) systems.
 
-> **Live demo:** _TODO — add deployed URL here_
+> **▶ Live demo: [gacha-pull-planner.vercel.app](https://gacha-pull-planner.vercel.app)**
+> _The backend runs on a free tier and sleeps when idle, so the first Simulate after a quiet period can take ~30–60s to wake — subsequent runs are instant._
 
 ![Gacha Pull Simulator — success rate, per-banner stats, and the pull-distribution chart](docs/results.png)
 
