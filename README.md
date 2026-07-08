@@ -4,7 +4,7 @@ A Monte Carlo planning tool for gacha games. Just tell it:
 - How many pulls you have
 - Your current pity
 - Pull goals (num. characters and/ or weapons) and select the strategy (prioritize all character copies before attempting pulls on the weapon, pull the first character copy followed by the weapon and then pull two more character copies, etc.)
-After which, it will run 10,000 simulated attempts and tells you your odds of success, what a typical failure looks like, and a blunt, plain-English AI verdict on whether your goal is realistic.
+After which, it will run 10,000 simulated attempts and tell you your odds of success, what a typical failure looks like, and a blunt, plain-English AI verdict on whether your goal is realistic.
 
 Game-agnostic by design: the pity curves are fully configurable, so the same engine
 models a wide range of gacha games built around dual-banner (character + weapon)
@@ -42,8 +42,7 @@ plus their signature weapon") who want a confidence level and a strategy. This w
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
   guarantee + refund interactions are painful to express analytically but trivial to
   simulate, and simulation naturally yields the full outcome distribution.
-- Made pity rates **configurable** rather than hard-coding for any particular game a 
-  deliberate scope expansion to broaden the audience beyond any single title.
+- Made pity rates **configurable** rather than hard-coding for any particular game, this is a deliberate scope expansion to broaden the audience beyond any single title.
 - Kept the simulation core **pure and framework-free** so it's testable in isolation
   and reusable outside the web app.
 
