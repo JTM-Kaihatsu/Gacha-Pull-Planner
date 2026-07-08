@@ -243,7 +243,11 @@ React/Vite frontend on **Vercel**, both on free tiers. Config lives in
 **[DEPLOY.md](DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
 `VITE_API_URL` wiring, and cost notes).
 
-The AI verdict is off by default, but can be turned on and cost limits are set to prevent call exploitation/ abuse. In the event rate-limiting is triggered, a fallback of the AI verdict being hidden has been implemented.
+The AI verdict is off by default, but can be turned on; cost limits are set on the
+OpenAI side to prevent abuse. It also degrades gracefully: the AI call is decoupled
+from the simulation, so if the OpenAI API is rate-limited or returns an error, the
+simulation results and chart still render and the verdict section shows an honest
+"temporarily unavailable" message instead of failing the whole request.
 
 ---
 

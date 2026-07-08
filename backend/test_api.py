@@ -61,6 +61,7 @@ def test_endpoint(monkeypatch):
     data = response.json()
 
     assert data["analysis_text"] == "analysis"
+    assert data["analysis_status"] == "ok"
     assert data["trials"] == dummy_stats["trials"]
     for key, value in dummy_stats.items():
         if key != "trials":
@@ -104,6 +105,7 @@ def test_ai_analysis_disabled_by_default(monkeypatch):
 
     assert response.status_code == 200
     assert response.json()["analysis_text"] is None
+    assert response.json()["analysis_status"] == "disabled"
     assert called["analyzer"] is False
 
 
@@ -153,21 +155,24 @@ def test_invalid_banner_returns_422():
     assert client.post("/analyze", json=payload).status_code == 422
 
 
-def test_analyzer_error_surfaces_as_500(monkeypatch):
-    dummy_stats = {
-        "trials": 1, "success_rate": "0.00%", "avg_pity_char": None, "avg_pity_weapon": None,
-        "successes_char_win_rate": "0%", "successes_weapon_win_rate": "0%",
-        "avg_leftover_pulls_on_success": 0, "avg_refund_success": 0,
-        "failure_char_win_rate": "0%", "failure_weapon_win_rate": "0%",
-        "avg_leftover_pulls_on_failure": 0, "avg_refund_fail": 0,
-        "most_common_failure_state": None, "failure_state_distribution": [],
-        "correlation_stats": {}, "viz_sample": [],
-    }
+_DUMMY_STATS = {
+    "trials": 1, "success_rate": "0.00%", "avg_pity_char": None, "avg_pity_weapon": None,
+    "successes_char_win_rate": "0%", "successes_weapon_win_rate": "0%",
+    "avg_leftover_pulls_on_success": 0, "avg_refund_success": 0,
+    "failure_char_win_rate": "0%", "failure_weapon_win_rate": "0%",
+    "avg_leftover_pulls_on_failure": 0, "avg_refund_fail": 0,
+    "most_common_failure_state": None, "failure_state_distribution": [],
+    "correlation_stats": {}, "viz_sample": [],
+}
 
+
+def test_ai_failure_degrades_gracefully(monkeypatch):
+    """An AI failure must NOT 500 the whole request — the simulation result is
+    still returned, with analysis_text null and status 'unavailable'."""
     def _boom(*_, **__):
         raise RuntimeError("openai down")
 
-    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: dummy_stats)
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS)
     monkeypatch.setattr(main, "analyze_sim_result", _boom)
 
     client = TestClient(main.app)
@@ -175,8 +180,44 @@ def test_analyzer_error_surfaces_as_500(monkeypatch):
     payload["enable_ai_analysis"] = True
 
     response = client.post("/analyze", json=payload)
+    assert response.status_code == 200                       # not 500
+    data = response.json()
+    assert data["analysis_text"] is None
+    assert data["analysis_status"] == "unavailable"
+    assert data["stats_summary"]["success_rate"] == "0.00%"  # sim result intact
+
+
+def test_ai_rate_limit_reports_rate_limited_status(monkeypatch):
+    """A 429 from the AI provider maps to the 'rate_limited' status."""
+    class _RateLimited(Exception):
+        status_code = 429
+
+    def _boom(*_, **__):
+        raise _RateLimited("rate limit exceeded")
+
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS)
+    monkeypatch.setattr(main, "analyze_sim_result", _boom)
+
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["enable_ai_analysis"] = True
+
+    response = client.post("/analyze", json=payload)
+    assert response.status_code == 200
+    assert response.json()["analysis_status"] == "rate_limited"
+    assert response.json()["analysis_text"] is None
+
+
+def test_sim_failure_still_500(monkeypatch):
+    """A real simulation failure (not the AI step) is still a 500."""
+    def _boom(**_):
+        raise RuntimeError("sim broke")
+
+    monkeypatch.setattr(main, "run_simulation_verbose", _boom)
+    client = TestClient(main.app)
+    response = client.post("/analyze", json=_valid_payload())
     assert response.status_code == 500
-    assert "openai down" in response.json()["detail"]
+    assert "sim broke" in response.json()["detail"]
 
 
 def test_cors_allows_configured_origin(monkeypatch):

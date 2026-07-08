@@ -42,6 +42,7 @@ class SimRequest(BaseModel):
 
 @app.post("/analyze")
 def analyze(req: SimRequest):
+    # The simulation is the core result — a failure here is a real 500.
     try:
         strategy = [{"banner": p.banner, "copies": p.copies} for p in req.strategy]
 
@@ -56,11 +57,26 @@ def analyze(req: SimRequest):
             char_pity_config=req.char_pity_config.model_dump(),
             weapon_pity_config=req.weapon_pity_config.model_dump(),
         )
-        # Only run the (paid) LLM interpretation when explicitly enabled.
-        analysis_text = analyze_sim_result(stats) if req.enable_ai_analysis else None
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
 
-        return {
+    # The (paid, opt-in) LLM verdict degrades gracefully: a failure here must
+    # never take down the simulation result. Report status so the UI can show
+    # an honest "unavailable" message instead of silently dropping the section.
+    analysis_text = None
+    if not req.enable_ai_analysis:
+        analysis_status = "disabled"
+    else:
+        try:
+            analysis_text = analyze_sim_result(stats)
+            analysis_status = "ok"
+        except Exception as exc:
+            # OpenAI rate-limit / quota-cap surfaces as HTTP 429.
+            analysis_status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
+
+    return {
             "analysis_text": analysis_text,
+            "analysis_status": analysis_status,
             "trials": stats["trials"],
             "stats_summary": {
                 "success_rate": stats["success_rate"],
@@ -80,5 +96,3 @@ def analyze(req: SimRequest):
                 "viz_sample": stats["viz_sample"],
             },
         }
-    except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
