@@ -1,9 +1,10 @@
 # Gacha Pull Simulator
 
-A Monte Carlo planning tool for gacha games. Tell it how many pulls you have, your
-current pity, and what you're trying to pull for — it runs 10,000 simulated attempts
-and tells you your odds of success, what a typical failure looks like, and — if you
-opt in — a blunt, plain-English AI verdict on whether your goal is realistic.
+A Monte Carlo planning tool for gacha games. Just tell it: 
+- How many pulls you have
+- Your current pity
+- Pull goals (num. characters and/ or weapons) and select the strategy (prioritize all character copies before attempting pulls on the weapon, pull the first character copy followed by the weapon and then pull two more character copies, etc.)
+After which, it will run 10,000 simulated attempts and tells you your odds of success, what a typical failure looks like, and a blunt, plain-English AI verdict on whether your goal is realistic.
 
 Game-agnostic by design: the pity curves are fully configurable, so the same engine
 models a wide range of gacha games built around dual-banner (character + weapon)
@@ -19,65 +20,63 @@ systems.
 ## The product story
 
 **Problem.** Gacha players spend real money and months of saved currency chasing
-limited banners, but the systems are deliberately opaque — layered pity, 50/50 and
-75/25 coin-flips, soft-pity ramps. "Do I have enough to get what I want?" is a
-genuinely hard probability question, and existing tools mostly answer "here's the
-average pity," which doesn't tell you your actual odds or what to do if you're short.
+limited banners, but the systems are deliberately opaque: layered pity, 50/50 and
+75/25 coin-flips, soft-pity ramps. "Do I have enough to get what I want?" is difficult for players to answer for themselves when trying to budget for other upcoming characters, and existing tools mostly answer "here's the average pity," which doesn't tell you your actual odds or what to do if you're short.
 
 **Who it's for.** Players planning a specific pull goal ("2 copies of the character
-plus their signature weapon") who want a confidence level and a strategy, not a
-spreadsheet.
+plus their signature weapon") who want a confidence level and a strategy. This way, they can responsibly plan out their pulling strategy based on how likely they are to obtain their goals against what team setups they would like to form.
 
 **What it does differently.**
 - **Distributions, not averages.** It reports a *success rate* across 10,000 trials
   and the most common *failure states* ("you ran out after 1 of 2 characters, 30% of
-  the time") — the information you actually need to decide whether to pull now or wait.
+  the time"). This is the information you actually need to decide whether to pull now or wait.
 - **Strategy-aware.** Pull order matters because pity carries across a banner. The
   tool models an ordered strategy (e.g. character → weapon → character) rather than
-  treating goals as independent.
+  treating goals as independent. The model is also able to consider pity for "refunds" from obtaining the 4-star characters on the banner that are already maxed out.
 - **An optional verdict, in plain English.** Opt in and the stats are piped through an
-  LLM prompt tuned to answer one question like a friend would: *doable, tight, or a
-  stretch — and how many more pulls would close the gap?* It's **off by default** (via
-  Advanced Settings), so the core simulation and chart run with zero API cost.
+  LLM prompt tuned to answer: *Is this doable, tight, or a bit of a stretch goal?
+  And how many more pulls would close the gap?* It's **off by default** (via
+  Advanced Settings), so the core simulation and chart run faster.
 
 **Key product/technical decisions.**
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
   guarantee + refund interactions are painful to express analytically but trivial to
   simulate, and simulation naturally yields the full outcome distribution.
-- Made pity rates **configurable** rather than hard-coding one game — a deliberate
-  scope expansion to broaden the audience beyond a single title.
+- Made pity rates **configurable** rather than hard-coding for any particular game a 
+  deliberate scope expansion to broaden the audience beyond any single title.
 - Kept the simulation core **pure and framework-free** so it's testable in isolation
   and reusable outside the web app.
 
-**What I'd do next.** Persisted scenarios and shareable result links; per-game presets
-so users don't hand-enter pity curves; replacing the LLM verdict with a cheaper
-templated summary for the common cases; and frontend tests around the chart.
+**Roadmap.** 
+1. *QoL: Expanded structure coverage and shareable result links.* Add more options for different types of banners and 50/50 loss structures; replacing the LLM verdict with a templated summary rather than leaving it unstructured.
+2. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
+3. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
 
 ---
 
 ## Screenshots
 
-**Set up your scenario** — pulls, current pity, the 4★-refund flag, and an ordered
+**Scenario Setup:** Pulls, current pity, the 4★-refund flag, and an ordered
 character/weapon pull strategy:
 
 ![Input form and strategy builder](docs/input-form.png)
 
-**Configurable pity** — override base rate, soft-pity start, and hard pity per banner
+**Configurable Pity:** Override base rate, soft-pity start, and hard pity per banner
 to match any game (this is what makes the engine game-agnostic):
 
 ![Advanced settings — configurable pity curves](docs/advanced-settings.png)
 
-**Pull-distribution chart** — every sampled run as a stacked bar (successes on the
+**Pull-Distribution Chart:** Every sampled run as a stacked bar (successes on the
 left, failures on the right), with a per-phase breakdown on hover:
 
 ![Pull distribution chart with per-run tooltip](docs/chart-tooltip.png)
 
-**Optional AI verdict** — a blunt, plain-English read on your odds (opt-in, off by
+**Optional AI Verdict:** A blunt, plain-English read on your odds (opt-in, off by
 default):
 
 ![AI analysis](docs/ai-analysis.png)
 
-**Failure analysis** — the most common ways a run falls short:
+**Failure Analysis:** The most common ways a run falls short:
 
 ![Failed run stats](docs/failure-stats.png)
 
@@ -245,8 +244,7 @@ React/Vite frontend on **Vercel**, both on free tiers. Config lives in
 **[DEPLOY.md](DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
 `VITE_API_URL` wiring, and cost notes).
 
-Because the AI verdict is off by default, a public demo runs the full simulation and
-chart **without any OpenAI calls** — so hosting is effectively free.
+The AI verdict is off by default, but can be turned on and cost limits are set to prevent call exploitation/ abuse. In the event rate-limiting is triggered, a fallback of the AI verdict being hidden has been implemented.
 
 ---
 
@@ -254,8 +252,7 @@ chart **without any OpenAI calls** — so hosting is effectively free.
 
 - The AI verdict is **opt-in and off by default**. `/analyze` only calls the OpenAI
   API when `enable_ai_analysis` is `true`; the simulation, stats, and chart never
-  require a key. The OpenAI key lives in `.env` (gitignored) — never commit it. If you
+  require a key. The OpenAI key lives in `.env` (gitignored); never commit it. If you
   expose a public demo with the AI verdict enabled, set a spend cap on your OpenAI key.
 - Pity/guarantee/refund rates model common gacha systems but are simplifications;
   tune the pity configs to match a specific game.
-- No frontend test suite yet (see *What I'd do next*).
