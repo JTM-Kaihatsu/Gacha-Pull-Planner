@@ -1,4 +1,4 @@
-# HSR Pull Planner — Frontend Technical Spec
+# Gacha Pull Simulator — Frontend Technical Spec
 
 **Version:** 1.1
 **Status:** Proposed
@@ -171,8 +171,8 @@ The calendar feature (currently separate, not connected to FastAPI) will eventua
 
 ## Deployment Plan (Post-Frontend)
 
-1. Deploy React to **Vercel** (free subdomain, e.g. `hsrplanner.vercel.app`)
-2. Deploy FastAPI to **Railway** or **Render** (free tier, e.g. `hsrplanner-api.railway.app`)
+1. Deploy React to **Vercel** (free subdomain, e.g. `gacha-pull-planner.vercel.app`)
+2. Deploy FastAPI to **Railway** or **Render** (free tier, e.g. `gacha-pull-planner-api.railway.app`)
 3. Set `ALLOWED_ORIGINS` on the FastAPI host to match the Vercel subdomain
 4. Purchase custom domain when ready for public launch
 
