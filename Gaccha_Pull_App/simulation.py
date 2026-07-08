@@ -24,6 +24,14 @@ def banner_probability(pity, base_rate, soft_pity_start, hard_pity):
     return 1.0
 
 
+def _format_win_rate(won, encountered):
+    """Percentage string like '83.00%', or 'N/A' when there were no encounters
+    to win (avoids emitting a literal 'nan%' to the UI)."""
+    if encountered > 0:
+        return f"{won / encountered * 100:.2f}%"
+    return "N/A"
+
+
 def simulate_combo_verbose(
     total_pulls: int,
     strategy: list,
@@ -317,8 +325,8 @@ def run_simulation_verbose(
     won_50_50_runs_successes = df[(df.success) & (df.char_50_50_wins > 0)]["char_50_50_wins"].sum()
     won_25_75_runs_successes = df[(df.success) & (df.weapon_75_25_wins > 0)]["weapon_75_25_wins"].sum()
 
-    successes_char_win_rate = f"{((won_50_50_runs_successes / total_50_50s_encountered_in_successes) if total_50_50s_encountered_in_successes > 0 else np.nan) * 100:.2f}%"
-    successes_weapon_win_rate = f"{((won_25_75_runs_successes / total_25_75s_encountered_in_successes) if total_25_75s_encountered_in_successes > 0 else np.nan) * 100:.2f}%"
+    successes_char_win_rate = _format_win_rate(won_50_50_runs_successes, total_50_50s_encountered_in_successes)
+    successes_weapon_win_rate = _format_win_rate(won_25_75_runs_successes, total_25_75s_encountered_in_successes)
 
     # ... (Existing win rate calculations for failures) ...
 
@@ -342,8 +350,8 @@ def run_simulation_verbose(
     won_50_50_runs_failures = df[(~df.success) & (df.char_50_50_wins > 0)]["char_50_50_wins"].sum()
     won_25_75_runs_failures = df[(~df.success) & (df.weapon_75_25_wins > 0)]["weapon_75_25_wins"].sum()
 
-    failure_char_win_rate = f"{((won_50_50_runs_failures / total_50_50s_encountered_in_failures) if total_50_50s_encountered_in_failures > 0 else np.nan) * 100:.2f}%"
-    failure_weapon_win_rate = f"{((won_25_75_runs_failures / total_25_75s_encountered_in_failures) if total_25_75s_encountered_in_failures > 0 else np.nan) * 100:.2f}%"
+    failure_char_win_rate = _format_win_rate(won_50_50_runs_failures, total_50_50s_encountered_in_failures)
+    failure_weapon_win_rate = _format_win_rate(won_25_75_runs_failures, total_25_75s_encountered_in_failures)
 
     desired_chars = sum(p["copies"] for p in strategy if p["banner"] == "char")
     desired_weapons   = sum(p["copies"] for p in strategy if p["banner"] == "weapon")

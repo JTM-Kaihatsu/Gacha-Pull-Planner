@@ -2,10 +2,10 @@
 """main.py
 FastAPI entrypoint exposing `/analyze`.
 """
-from typing import List
+from typing import List, Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from simulation import run_simulation_verbose
 from analyzer import analyze_sim_result
 from config import get_openai_api_key, get_allowed_origins
@@ -20,8 +20,8 @@ app.add_middleware(
 )
 
 class PhaseRequest(BaseModel):
-    banner: str   # "char" or "weapon"
-    copies: int
+    banner: Literal["char", "weapon"]
+    copies: int = Field(..., ge=1)
 
 class PityConfig(BaseModel):
     base_rate: float = 0.006
@@ -34,7 +34,7 @@ class SimRequest(BaseModel):
     start_char_guarantee: bool = False
     start_weapon_pity: int
     start_weapon_guarantee: bool = False
-    strategy: List[PhaseRequest]
+    strategy: List[PhaseRequest] = Field(..., min_length=1)
     full_4star_chars: bool = True
     enable_ai_analysis: bool = False
     char_pity_config: PityConfig = PityConfig()

@@ -132,6 +132,27 @@ def test_bad_strategy_item_returns_422():
     assert client.post("/analyze", json=payload).status_code == 422
 
 
+def test_empty_strategy_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["strategy"] = []
+    assert client.post("/analyze", json=payload).status_code == 422
+
+
+def test_zero_copies_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["strategy"] = [{"banner": "char", "copies": 0}]
+    assert client.post("/analyze", json=payload).status_code == 422
+
+
+def test_invalid_banner_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()
+    payload["strategy"] = [{"banner": "relic", "copies": 1}]
+    assert client.post("/analyze", json=payload).status_code == 422
+
+
 def test_analyzer_error_surfaces_as_500(monkeypatch):
     dummy_stats = {
         "trials": 1, "success_rate": "0.00%", "avg_pity_char": None, "avg_pity_weapon": None,
