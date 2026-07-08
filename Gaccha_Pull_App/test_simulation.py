@@ -87,7 +87,8 @@ class TestSimulateCombo:
         assert used == 0
 
     def test_empty_strategy_is_trivially_successful(self):
-        # Degenerate case: no goal -> 0 >= 0 -> success. Documents current behavior.
+        # Low-level engine treats an empty goal as trivially met (0 >= 0). The API
+        # layer rejects empty strategies before reaching here (see test_api.py).
         success, used, refunded, leftover, meta = simulate_combo_verbose(
             total_pulls=10, strategy=[]
         )
@@ -293,11 +294,9 @@ class TestRunSimulation:
         assert out["trials"] == 321
 
 
-class TestKnownEdgeBehaviors:
-    """Pins two rough edges surfaced during review (see README 'What I'd do next')."""
-
-    def test_weapon_win_rate_is_nan_string_when_no_weapon_goal(self, always_hit_config):
-        # No weapon phase -> zero weapon encounters -> literal 'nan%' reaches the UI.
+class TestWinRateFormatting:
+    def test_weapon_win_rate_is_na_when_no_weapon_goal(self, always_hit_config):
+        # No weapon phase -> zero weapon encounters -> 'N/A' (not a literal 'nan%').
         out = run_simulation_verbose(
             total_pulls=50,
             strategy=[{"banner": "char", "copies": 1}],
@@ -305,4 +304,27 @@ class TestKnownEdgeBehaviors:
             char_pity_config=always_hit_config,
             trials=20,
         )
-        assert out["successes_weapon_win_rate"] == "nan%"
+        assert out["successes_weapon_win_rate"] == "N/A"
+
+    def test_failure_win_rates_are_na_on_full_success(self, always_hit_config):
+        # 100% success -> no failed runs -> failure win rates are 'N/A', never 'nan%'.
+        out = run_simulation_verbose(
+            total_pulls=50,
+            strategy=[{"banner": "char", "copies": 1}],
+            start_char_guarantee=True,
+            char_pity_config=always_hit_config,
+            trials=20,
+        )
+        assert out["failure_char_win_rate"] == "N/A"
+        assert "nan" not in out["successes_char_win_rate"].lower()
+
+    def test_win_rate_is_percentage_when_encounters_exist(self, always_hit_config):
+        out = run_simulation_verbose(
+            total_pulls=50,
+            strategy=[{"banner": "char", "copies": 1}],
+            start_char_guarantee=True,
+            char_pity_config=always_hit_config,
+            trials=20,
+        )
+        assert out["successes_char_win_rate"].endswith("%")
+        assert out["successes_char_win_rate"] != "N/A"
