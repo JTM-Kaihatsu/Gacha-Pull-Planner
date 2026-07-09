@@ -6,6 +6,7 @@ import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
 import SummaryBlock from './components/SummaryBlock'
 import PullsChart from './components/PullsChart'
+import ScenarioComparison from './components/ScenarioComparison'
 import AdvancedSettings, { CHAR_DEFAULTS, WEAPON_DEFAULTS } from './components/AdvancedSettings'
 import './index.css'
 
@@ -24,6 +25,7 @@ export default function App() {
   const [weaponAfter, setWeaponAfter]           = useState(1)
   const [loading, setLoading]           = useState(false)
   const [result, setResult]             = useState(null)
+  const [baseline, setBaseline]         = useState(null)
   const [error, setError]               = useState(null)
   const [strategyError, setStrategyError]   = useState(null)
   const [sampleSize, setSampleSize]         = useState(500)
@@ -57,9 +59,14 @@ export default function App() {
     setLoading(true)
     setError(null)
     setResult(null)
+    setBaseline(null)
 
     const showOrdering = desiredChars > 1 && desiredWeapons >= 1
     const strategy = buildStrategy(desiredChars, desiredWeapons, showOrdering ? weaponAfter : desiredChars)
+
+    // Snapshot of exactly what produced this result, so the scenario-comparison
+    // panel can re-run variations without depending on live-editable form state.
+    const snapshot = { form, desiredChars, desiredWeapons, weaponAfter, full4StarChars, charPityConfig, weaponPityConfig }
 
     try {
       const data = await analyze({
@@ -71,6 +78,7 @@ export default function App() {
         weapon_pity_config: weaponPityConfig,
       })
       setResult(data)
+      setBaseline(snapshot)
     } catch (err) {
       setError(err.message)
     } finally {
@@ -185,6 +193,8 @@ export default function App() {
                 />
               </div>
             )}
+
+            {baseline && <ScenarioComparison baseline={baseline} baselineStats={stats} />}
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
               <summary className="text-sm font-medium text-slate-400 select-none">Failed Run Stats</summary>

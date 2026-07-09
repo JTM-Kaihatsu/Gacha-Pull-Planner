@@ -43,7 +43,7 @@ simulation at increasing `total_pulls` until a target success rate is reached (f
 example 80 percent). Present the result neutrally next to the alternative of waiting
 for a guarantee. This is Scenario A (below) run automatically.
 
-## Layer 2: Deterministic scenario comparison (the core new feature)
+## Layer 2: Deterministic scenario comparison (the core new feature, implemented)
 
 The user has a baseline result. They pick a preset what-if. The backend re-runs the
 simulation with a transformed request. The UI shows baseline versus new side by
