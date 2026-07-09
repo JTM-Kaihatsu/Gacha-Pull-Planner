@@ -4,7 +4,7 @@ A Monte Carlo planning tool for gacha games. Just tell it:
 - How many pulls you have
 - Your current pity
 - Pull goals (num. characters and/ or weapons) and select the strategy (prioritize all character copies before attempting pulls on the weapon, pull the first character copy followed by the weapon and then pull two more character copies, etc.)
-After which, it will run 10,000 simulated attempts and tell you your odds of success, what a typical failure looks like, and a blunt, plain-English AI verdict on whether your goal is realistic.
+After which, it will run 10,000 simulated attempts and tell you your odds of success and what a typical failure looks like, so you can decide whether your goal is realistic.
 
 Game-agnostic by design: the pity curves are fully configurable, so the same engine
 models a wide range of gacha games built around dual-banner (character + weapon)
@@ -33,10 +33,11 @@ plus their signature weapon") who want a confidence level and a strategy. This w
 - **Strategy-aware.** Pull order matters because pity carries across a banner. The
   tool models an ordered strategy (e.g. character → weapon → character) rather than
   treating goals as independent. The model is also able to consider pity for "refunds" from obtaining the 4-star characters on the banner that are already maxed out.
-- **An optional verdict, in plain English.** Opt in and the stats are piped through an
-  LLM prompt tuned to answer: *Is this doable, tight, or a bit of a stretch goal?
-  And how many more pulls would close the gap?* It's **off by default** (via
-  Advanced Settings), so the core simulation and chart run faster.
+- **Deterministic by default.** The odds, the distribution, and the failure
+  breakdown are computed directly from the simulation, not narrated by a model. The
+  planned advisor layer reserves AI for open-ended follow-up questions only, rather
+  than restating numbers you can already see. See the [Scenario Comparison and
+  Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
 
 **Key product/technical decisions.**
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
@@ -47,7 +48,7 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   and reusable outside the web app.
 
 **Roadmap.** 
-1. *QoL: Expanded structure coverage.* Add more options for different types of banners and 50/50 loss structures; replacing the LLM verdict with a templated summary rather than leaving it unstructured.
+1. *QoL: Expanded structure coverage and a smarter read.* Add more options for different types of banners and 50/50 loss structures. Replace the one-shot LLM verdict with a deterministic read plus one-click scenario comparisons, and reserve AI for open-ended follow-up questions. See the [Scenario Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
 2. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
 3. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
 
@@ -183,7 +184,13 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 
 ```json
 {
+  "summary": {
+    "confidence": "coin_flip",
+    "headline": "This is close to a coin flip.",
+    "notes": ["On the runs that succeed, you finish with about 6 pulls to spare.", "..."]
+  },
   "analysis_text": "You need to win both 50/50s...",
+  "analysis_status": "ok",
   "trials": 10000,
   "stats_summary": {
     "success_rate": "46.75%",
@@ -207,7 +214,9 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `analysis_text` | string\|null | LLM-generated plain-English verdict; `null` unless `enable_ai_analysis` was `true` |
+| `summary` | object | Deterministic, always-present plain-language read: a `confidence` label (`comfortable` / `likely` / `coin_flip` / `stretch` / `long_shot`), a `headline`, and a list of `notes`. Computed by rules, no model, no cost |
+| `analysis_text` | string\|null | Optional LLM verdict; `null` unless `enable_ai_analysis` was `true` |
+| `analysis_status` | string | `disabled`, `ok`, `rate_limited`, or `unavailable` (see the graceful fallback below) |
 | `trials` | int | Number of Monte Carlo trials (10,000) |
 | `success_rate` | string | % of trials that met the full goal |
 | `avg_pity_char` / `avg_pity_weapon` | float | Avg pity at which the 5★ hit, on successful runs |

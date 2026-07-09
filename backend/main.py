@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from simulation import run_simulation_verbose
 from analyzer import analyze_sim_result
+from summary import build_summary
 from config import get_openai_api_key, get_allowed_origins
 
 app = FastAPI()
@@ -75,6 +76,8 @@ def analyze(req: SimRequest):
             analysis_status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
 
     return {
+            # Deterministic, always-computed plain-language read (no model, no cost).
+            "summary": build_summary(stats),
             "analysis_text": analysis_text,
             "analysis_status": analysis_status,
             "trials": stats["trials"],
