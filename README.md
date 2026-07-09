@@ -47,9 +47,9 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   and reusable outside the web app.
 
 **Roadmap.** 
-1. *QoL: Expanded structure coverage and shareable result links.* Add more options for different types of banners and 50/50 loss structures; replacing the LLM verdict with a templated summary rather than leaving it unstructured.
-2. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
-3. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
+1. *QoL: Expanded structure coverage.* Add more options for different types of banners and 50/50 loss structures; replacing the LLM verdict with a templated summary rather than leaving it unstructured.
+2. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
+3. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
 
 ---
 
