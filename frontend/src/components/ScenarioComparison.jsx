@@ -1,18 +1,17 @@
 import { useState } from 'react'
 import { analyze } from '../api'
 import { buildOrderingOptions } from './StrategyBuilder'
-import { buildScenarioPayload, compareScenarios } from '../lib/scenarios'
+import { buildScenarioPayload, compareScenarios, isValidPullDelta } from '../lib/scenarios'
 
-const ADD_CHIPS = [10, 20, 30]
-const CUT_CHIPS = [10, 20, 30]
+const NEGATIVE_CHIPS = [-30, -20, -10]
+const POSITIVE_CHIPS = [10, 20, 30]
 
 export default function ScenarioComparison({ baseline, baselineStats }) {
   const [comparison, setComparison] = useState(null)
   const [activeLabel, setActiveLabel] = useState(null)
   const [loadingLabel, setLoadingLabel] = useState(null)
   const [scenarioError, setScenarioError] = useState(null)
-  const [customAdd, setCustomAdd] = useState('')
-  const [customCut, setCustomCut] = useState('')
+  const [pullDeltaInput, setPullDeltaInput] = useState('0')
 
   const { desiredChars: C, desiredWeapons: W, weaponAfter } = baseline
   const totalPulls = baseline.form.total_pulls
@@ -22,7 +21,11 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
   const orderOptions = showOrder
     ? buildOrderingOptions(C).filter(opt => opt.value !== weaponAfter)
     : []
-  const cutChips = CUT_CHIPS.filter(n => totalPulls - n >= 1)
+
+  const pullDelta = parseInt(pullDeltaInput, 10) || 0
+  const newTotalPulls = totalPulls + pullDelta
+  const pullDeltaValid = isValidPullDelta(totalPulls, pullDelta)
+  const pullsSubmitting = loadingLabel === 'pulls'
 
   async function runScenario(label, overrides) {
     setLoadingLabel(label)
@@ -30,13 +33,26 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
     try {
       const payload = buildScenarioPayload(baseline, overrides)
       const data = await analyze(payload)
-      setComparison(compareScenarios(baselineStats, data.stats_summary))
+      setComparison({
+        ...compareScenarios(baselineStats, data.stats_summary),
+        baseTotalPulls: totalPulls,
+        newTotalPulls: payload.total_pulls,
+      })
       setActiveLabel(label)
     } catch (err) {
       setScenarioError(err.message)
     } finally {
       setLoadingLabel(null)
     }
+  }
+
+  function adjustPullDelta(amount) {
+    setPullDeltaInput(String(pullDelta + amount))
+  }
+
+  function handleResubmitPulls() {
+    if (!pullDeltaValid) return
+    runScenario('pulls', { total_pulls: newTotalPulls })
   }
 
   function clear() {
@@ -51,56 +67,41 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
       <div className="mt-4 space-y-5">
         <p className="text-xs text-slate-500">
           Try a quick what-if against your baseline result. These re-run the
-          simulation instantly and never use the optional AI verdict.
+          simulation and never use the optional AI verdict.
         </p>
 
-        <ScenarioGroup label="What if I had more pulls?">
-          {ADD_CHIPS.map(n => (
-            <ChipButton
-              key={n}
-              loading={loadingLabel === `+${n}`}
-              active={activeLabel === `+${n}`}
-              onClick={() => runScenario(`+${n}`, { total_pulls: totalPulls + n })}
+        <ScenarioGroup label="What if I changed my pull budget?">
+          <div className="flex flex-wrap items-center gap-2">
+            {NEGATIVE_CHIPS.map(n => (
+              <ChipButton key={n} onClick={() => adjustPullDelta(n)}>{n}</ChipButton>
+            ))}
+            <input
+              type="number"
+              value={pullDeltaInput}
+              onChange={e => setPullDeltaInput(e.target.value)}
+              className="w-20 text-center bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-sm text-white focus:outline-none focus:border-violet-500"
+            />
+            {POSITIVE_CHIPS.map(n => (
+              <ChipButton key={n} onClick={() => adjustPullDelta(n)}>+{n}</ChipButton>
+            ))}
+          </div>
+          <div className="flex items-center justify-between gap-3 flex-wrap">
+            <span className="text-xs text-slate-500">
+              {newTotalPulls < 1 ? (
+                <span className="text-red-400">Resulting total must be at least 1 pull.</span>
+              ) : (
+                <>New total: <span className="text-slate-300 font-medium">{newTotalPulls}</span> pulls (baseline: {totalPulls})</>
+              )}
+            </span>
+            <button
+              type="button"
+              onClick={handleResubmitPulls}
+              disabled={!pullDeltaValid || pullsSubmitting}
+              className="text-xs font-medium px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
             >
-              +{n}
-            </ChipButton>
-          ))}
-          <CustomAmountInput
-            value={customAdd}
-            onChange={setCustomAdd}
-            placeholder="Custom"
-            buttonLabel="Add"
-            onSubmit={() => {
-              const n = parseInt(customAdd, 10)
-              if (Number.isFinite(n) && n > 0) runScenario(`+${n} custom`, { total_pulls: totalPulls + n })
-            }}
-          />
-        </ScenarioGroup>
-
-        <ScenarioGroup label="What if I cut my budget?">
-          {cutChips.map(n => (
-            <ChipButton
-              key={n}
-              loading={loadingLabel === `-${n}`}
-              active={activeLabel === `-${n}`}
-              onClick={() => runScenario(`-${n}`, { total_pulls: totalPulls - n })}
-            >
-              -{n}
-            </ChipButton>
-          ))}
-          <CustomAmountInput
-            value={customCut}
-            onChange={setCustomCut}
-            placeholder="Custom"
-            buttonLabel="Cut"
-            onSubmit={() => {
-              const n = parseInt(customCut, 10)
-              if (Number.isFinite(n) && n > 0 && totalPulls - n >= 1) runScenario(`-${n} custom`, { total_pulls: totalPulls - n })
-            }}
-          />
-          {cutChips.length === 0 && (
-            <p className="text-xs text-slate-600">Your budget is already tight, there is little room to cut.</p>
-          )}
+              {pullsSubmitting ? 'Running…' : 'Resubmit and Compare Results'}
+            </button>
+          </div>
         </ScenarioGroup>
 
         {showDrop && (
@@ -149,9 +150,9 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
 
 function ScenarioGroup({ label, children }) {
   return (
-    <div>
-      <div className="text-xs text-slate-500 uppercase tracking-wider mb-2">{label}</div>
-      <div className="flex flex-wrap items-center gap-2">{children}</div>
+    <div className="space-y-2">
+      <div className="text-xs text-slate-500 uppercase tracking-wider">{label}</div>
+      {children}
     </div>
   )
 }
@@ -173,30 +174,11 @@ function ChipButton({ children, onClick, active, loading, disabled }) {
   )
 }
 
-function CustomAmountInput({ value, onChange, onSubmit, placeholder, buttonLabel }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <input
-        type="number"
-        min={1}
-        value={value}
-        onChange={e => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-20 bg-slate-800 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-white focus:outline-none focus:border-violet-500"
-      />
-      <button
-        type="button"
-        onClick={onSubmit}
-        className="text-xs font-medium px-3 py-1.5 rounded-lg border border-slate-700 text-slate-300 hover:border-violet-500 transition-colors"
-      >
-        {buttonLabel}
-      </button>
-    </div>
-  )
-}
-
 function ComparisonCard({ comparison, onClear }) {
-  const { basePct, newPct, delta, baseLeftover, newLeftover, baseFailure, newFailure, interpretation } = comparison
+  const {
+    basePct, newPct, delta, baseLeftover, newLeftover, baseFailure, newFailure,
+    interpretation, baseTotalPulls, newTotalPulls,
+  } = comparison
   const deltaColor = delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-slate-400'
   const sign = delta > 0 ? '+' : ''
 
@@ -207,6 +189,15 @@ function ComparisonCard({ comparison, onClear }) {
         <button type="button" onClick={onClear} className="text-xs text-slate-500 hover:text-slate-300">
           Clear
         </button>
+      </div>
+
+      <div className="text-sm text-slate-300">
+        <span className="text-xs text-slate-500 uppercase tracking-wider block mb-0.5">Total Pulls Simulated On</span>
+        {baseTotalPulls} <span className="text-slate-600">to</span>{' '}
+        <span className="font-semibold text-white">{newTotalPulls}</span>
+        {baseTotalPulls === newTotalPulls && (
+          <span className="text-slate-600 ml-1">(unchanged)</span>
+        )}
       </div>
 
       <div className="grid grid-cols-2 gap-3">

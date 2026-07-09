@@ -39,6 +39,12 @@ export function buildScenarioPayload(baseline, overrides = {}) {
   }
 }
 
+// A pull-budget delta is only submittable if it actually changes something and
+// does not push the total below 1.
+export function isValidPullDelta(baselineTotalPulls, delta) {
+  return delta !== 0 && baselineTotalPulls + delta >= 1
+}
+
 const HELP_THRESHOLD = { big: 10, small: 5 }
 
 export function compareScenarios(baselineStats, newStats) {
