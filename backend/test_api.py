@@ -62,6 +62,7 @@ def test_endpoint(monkeypatch):
 
     assert data["analysis_text"] == "analysis"
     assert data["analysis_status"] == "ok"
+    assert set(data["summary"]) == {"confidence", "headline", "notes"}  # deterministic read always present
     assert data["trials"] == dummy_stats["trials"]
     for key, value in dummy_stats.items():
         if key != "trials":

@@ -4,6 +4,7 @@ import PityInputs from './components/PityInputs'
 import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
 import AnalysisBlock from './components/AnalysisBlock'
+import SummaryBlock from './components/SummaryBlock'
 import PullsChart from './components/PullsChart'
 import AdvancedSettings, { CHAR_DEFAULTS, WEAPON_DEFAULTS } from './components/AdvancedSettings'
 import './index.css'
@@ -153,6 +154,8 @@ export default function App() {
         {result && stats && (
           <div className="mt-8 space-y-6">
             <h2 className="text-lg font-semibold text-white">Results for Successful Runs</h2>
+
+            {result.summary && <SummaryBlock summary={result.summary} />}
 
             <div className="grid grid-cols-2 gap-3">
               <StatCard label="Success Rate" value={stats.success_rate} highlight />
