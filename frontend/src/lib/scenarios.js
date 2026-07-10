@@ -54,11 +54,11 @@ export function compareScenarios(baselineStats, newStats) {
 
   let interpretation
   if (delta >= HELP_THRESHOLD.big) {
-    interpretation = 'This helps a lot. The extra room lets you absorb a lost coin flip.'
+    interpretation = 'This meaningfully improves your odds.'
   } else if (delta <= -HELP_THRESHOLD.big) {
     interpretation = 'This costs you a real chunk of your odds.'
   } else if (Math.abs(delta) < HELP_THRESHOLD.small) {
-    interpretation = 'This barely moves the odds. Your bottleneck is winning the coin flips, not pull count.'
+    interpretation = 'This barely moves the odds.'
   } else if (delta > 0) {
     interpretation = 'This helps some, but is not a decisive swing on its own.'
   } else {

@@ -1,63 +1,68 @@
 import { useState } from 'react'
 import { analyze } from '../api'
-import { buildOrderingOptions } from './StrategyBuilder'
-import { buildScenarioPayload, compareScenarios, isValidPullDelta } from '../lib/scenarios'
+import { StrategyPreview } from './StrategyBuilder'
+import { buildScenarioPayload, compareScenarios } from '../lib/scenarios'
 
 const NEGATIVE_CHIPS = [-30, -20, -10]
 const POSITIVE_CHIPS = [10, 20, 30]
+const MAX_CHARS = 7
+const MAX_WEAPONS = 5
+
+const pluralize = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
 
 export default function ScenarioComparison({ baseline, baselineStats }) {
-  const [comparison, setComparison] = useState(null)
-  const [activeLabel, setActiveLabel] = useState(null)
-  const [loadingLabel, setLoadingLabel] = useState(null)
-  const [scenarioError, setScenarioError] = useState(null)
-  const [pullDeltaInput, setPullDeltaInput] = useState('0')
-
-  const { desiredChars: C, desiredWeapons: W, weaponAfter } = baseline
   const totalPulls = baseline.form.total_pulls
+  const baseChars = baseline.desiredChars
+  const baseWeapons = baseline.desiredWeapons
 
-  const showDrop = (C + W) > 1
-  const showOrder = C > 1 && W >= 1
-  const orderOptions = showOrder
-    ? buildOrderingOptions(C).filter(opt => opt.value !== weaponAfter)
-    : []
+  const [pullDeltaInput, setPullDeltaInput] = useState('0')
+  const [newChars, setNewChars] = useState(baseChars)
+  const [newWeapons, setNewWeapons] = useState(baseWeapons)
+  const [comparison, setComparison] = useState(null)
+  const [loading, setLoading] = useState(false)
+  const [scenarioError, setScenarioError] = useState(null)
 
   const pullDelta = parseInt(pullDeltaInput, 10) || 0
   const newTotalPulls = totalPulls + pullDelta
-  const pullDeltaValid = isValidPullDelta(totalPulls, pullDelta)
-  const pullsSubmitting = loadingLabel === 'pulls'
 
-  async function runScenario(label, overrides) {
-    setLoadingLabel(label)
-    setScenarioError(null)
-    try {
-      const payload = buildScenarioPayload(baseline, overrides)
-      const data = await analyze(payload)
-      setComparison({
-        ...compareScenarios(baselineStats, data.stats_summary),
-        baseTotalPulls: totalPulls,
-        newTotalPulls: payload.total_pulls,
-      })
-      setActiveLabel(label)
-    } catch (err) {
-      setScenarioError(err.message)
-    } finally {
-      setLoadingLabel(null)
-    }
-  }
+  const showOrdering = newChars > 1 && newWeapons >= 1
+  const previewWeaponAfter = Math.min(baseline.weaponAfter, newChars)
+
+  const totalValid = newTotalPulls >= 1
+  const goalValid = (newChars + newWeapons) >= 1
+  const changed = pullDelta !== 0 || newChars !== baseChars || newWeapons !== baseWeapons
+  const canCompare = totalValid && goalValid && changed && !loading
 
   function adjustPullDelta(amount) {
     setPullDeltaInput(String(pullDelta + amount))
   }
 
-  function handleResubmitPulls() {
-    if (!pullDeltaValid) return
-    runScenario('pulls', { total_pulls: newTotalPulls })
+  async function handleCompare() {
+    if (!canCompare) return
+    setLoading(true)
+    setScenarioError(null)
+    try {
+      const payload = buildScenarioPayload(baseline, {
+        total_pulls: newTotalPulls,
+        desiredChars: newChars,
+        desiredWeapons: newWeapons,
+      })
+      const data = await analyze(payload)
+      setComparison({
+        ...compareScenarios(baselineStats, data.stats_summary),
+        baseTotalPulls: totalPulls,
+        newTotalPulls: payload.total_pulls,
+        baseChars, baseWeapons, newChars, newWeapons,
+      })
+    } catch (err) {
+      setScenarioError(err.message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   function clear() {
     setComparison(null)
-    setActiveLabel(null)
     setScenarioError(null)
   }
 
@@ -66,8 +71,8 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
       <summary className="text-sm font-medium text-slate-400 select-none">Compare Scenarios</summary>
       <div className="mt-4 space-y-5">
         <p className="text-xs text-slate-500">
-          Try a quick what-if against your baseline result. These re-run the
-          simulation and never use the optional AI verdict.
+          Build a what-if against your baseline result, then compare. This re-runs
+          the simulation and never uses the optional AI verdict.
         </p>
 
         <ScenarioGroup label="What if I changed my pull budget?">
@@ -85,60 +90,61 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
               <ChipButton key={n} onClick={() => adjustPullDelta(n)}>+{n}</ChipButton>
             ))}
           </div>
-          <div className="flex items-center justify-between gap-3 flex-wrap">
-            <span className="text-xs text-slate-500">
-              {newTotalPulls < 1 ? (
-                <span className="text-red-400">Resulting total must be at least 1 pull.</span>
-              ) : (
-                <>New total: <span className="text-slate-300 font-medium">{newTotalPulls}</span> pulls (baseline: {totalPulls})</>
-              )}
-            </span>
-            <button
-              type="button"
-              onClick={handleResubmitPulls}
-              disabled={!pullDeltaValid || pullsSubmitting}
-              className="text-xs font-medium px-3 py-1.5 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
-            >
-              {pullsSubmitting ? 'Running…' : 'Resubmit and Compare Results'}
-            </button>
+          <div className="text-xs">
+            {totalValid ? (
+              <span className="text-slate-500">
+                New total: <span className="text-slate-300 font-medium">{newTotalPulls}</span> pulls (baseline: {totalPulls})
+              </span>
+            ) : (
+              <span className="text-red-400">Resulting total must be at least 1 pull.</span>
+            )}
           </div>
         </ScenarioGroup>
 
-        {showDrop && (
-          <ScenarioGroup label="What if I drop a copy?">
-            <ChipButton
-              disabled={C === 0}
-              loading={loadingLabel === 'drop-char'}
-              active={activeLabel === 'drop-char'}
-              onClick={() => runScenario('drop-char', { desiredChars: C - 1 })}
-            >
-              Drop 1 character copy
-            </ChipButton>
-            <ChipButton
-              disabled={W === 0}
-              loading={loadingLabel === 'drop-weapon'}
-              active={activeLabel === 'drop-weapon'}
-              onClick={() => runScenario('drop-weapon', { desiredWeapons: W - 1 })}
-            >
-              Drop 1 weapon copy
-            </ChipButton>
-          </ScenarioGroup>
-        )}
+        <ScenarioGroup label="What if I changed my goal?">
+          <div className="space-y-2">
+            <Stepper
+              label="Character copies"
+              onDecrement={() => setNewChars(v => Math.max(0, v - 1))}
+              onIncrement={() => setNewChars(v => Math.min(MAX_CHARS, v + 1))}
+              decDisabled={newChars <= 0}
+              incDisabled={newChars >= MAX_CHARS}
+            />
+            <Stepper
+              label="Weapon copies"
+              onDecrement={() => setNewWeapons(v => Math.max(0, v - 1))}
+              onIncrement={() => setNewWeapons(v => Math.min(MAX_WEAPONS, v + 1))}
+              decDisabled={newWeapons <= 0}
+              incDisabled={newWeapons >= MAX_WEAPONS}
+            />
+          </div>
 
-        {showOrder && orderOptions.length > 0 && (
-          <ScenarioGroup label="What if I change the pull order?">
-            {orderOptions.map(opt => (
-              <ChipButton
-                key={opt.value}
-                loading={loadingLabel === `order-${opt.value}`}
-                active={activeLabel === `order-${opt.value}`}
-                onClick={() => runScenario(`order-${opt.value}`, { weaponAfter: opt.value })}
-              >
-                {opt.label}
-              </ChipButton>
-            ))}
-          </ScenarioGroup>
-        )}
+          <div className="text-xs text-slate-400">
+            New goal: {pluralize(newChars, 'character')} and {pluralize(newWeapons, 'weapon')}
+          </div>
+
+          {goalValid ? (
+            <StrategyPreview
+              desiredChars={newChars}
+              desiredWeapons={newWeapons}
+              weaponAfter={previewWeaponAfter}
+              showOrdering={showOrdering}
+            />
+          ) : (
+            <p className="text-xs text-red-400">Pick at least one character or weapon copy.</p>
+          )}
+        </ScenarioGroup>
+
+        <div className="flex justify-end">
+          <button
+            type="button"
+            onClick={handleCompare}
+            disabled={!canCompare}
+            className="text-sm font-medium px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+          >
+            {loading ? 'Running…' : 'Compare Simulations'}
+          </button>
+        </div>
 
         {scenarioError && <p className="text-red-400 text-sm">{scenarioError}</p>}
 
@@ -157,19 +163,38 @@ function ScenarioGroup({ label, children }) {
   )
 }
 
-function ChipButton({ children, onClick, active, loading, disabled }) {
+function ChipButton({ children, onClick, disabled }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      disabled={disabled || loading}
-      className={`text-xs font-medium px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-40 disabled:cursor-not-allowed ${
-        active
-          ? 'bg-violet-600 border-violet-500 text-white'
-          : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-violet-500'
-      }`}
+      disabled={disabled}
+      className="text-xs font-medium px-3 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-300 hover:border-violet-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
     >
-      {loading ? 'Running…' : children}
+      {children}
+    </button>
+  )
+}
+
+function Stepper({ label, onDecrement, onIncrement, decDisabled, incDisabled }) {
+  return (
+    <div className="flex items-center gap-3">
+      <span className="text-sm text-slate-300 w-32">{label}</span>
+      <StepButton onClick={onDecrement} disabled={decDisabled}>−</StepButton>
+      <StepButton onClick={onIncrement} disabled={incDisabled}>+</StepButton>
+    </div>
+  )
+}
+
+function StepButton({ children, onClick, disabled }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="w-8 h-8 flex items-center justify-center rounded-lg border bg-slate-800 border-slate-700 text-slate-300 text-lg leading-none hover:border-violet-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+    >
+      {children}
     </button>
   )
 }
@@ -177,10 +202,12 @@ function ChipButton({ children, onClick, active, loading, disabled }) {
 function ComparisonCard({ comparison, onClear }) {
   const {
     basePct, newPct, delta, baseLeftover, newLeftover, baseFailure, newFailure,
-    interpretation, baseTotalPulls, newTotalPulls,
+    interpretation, baseTotalPulls, newTotalPulls, baseChars, baseWeapons, newChars, newWeapons,
   } = comparison
   const deltaColor = delta > 0 ? 'text-emerald-400' : delta < 0 ? 'text-red-400' : 'text-slate-400'
   const sign = delta > 0 ? '+' : ''
+  const pullsChanged = baseTotalPulls !== newTotalPulls
+  const goalChanged = baseChars !== newChars || baseWeapons !== newWeapons
 
   return (
     <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4 space-y-3">
@@ -191,13 +218,19 @@ function ComparisonCard({ comparison, onClear }) {
         </button>
       </div>
 
-      <div className="text-sm text-slate-300">
-        <span className="text-xs text-slate-500 uppercase tracking-wider block mb-0.5">Total Pulls Simulated On</span>
-        {baseTotalPulls} <span className="text-slate-600">to</span>{' '}
-        <span className="font-semibold text-white">{newTotalPulls}</span>
-        {baseTotalPulls === newTotalPulls && (
-          <span className="text-slate-600 ml-1">(unchanged)</span>
-        )}
+      <div className="space-y-1">
+        <div className="text-sm text-slate-300">
+          <span className="text-xs text-slate-500 uppercase tracking-wider">Pulls simulated on: </span>
+          {baseTotalPulls} <span className="text-slate-600">to</span>{' '}
+          <span className="font-semibold text-white">{newTotalPulls}</span>
+          {!pullsChanged && <span className="text-slate-600 ml-1">(unchanged)</span>}
+        </div>
+        <div className="text-sm text-slate-300">
+          <span className="text-xs text-slate-500 uppercase tracking-wider">Goal: </span>
+          {baseChars}C / {baseWeapons}W <span className="text-slate-600">to</span>{' '}
+          <span className="font-semibold text-white">{newChars}C / {newWeapons}W</span>
+          {!goalChanged && <span className="text-slate-600 ml-1">(unchanged)</span>}
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-3">

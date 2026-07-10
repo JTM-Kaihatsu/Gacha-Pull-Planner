@@ -121,7 +121,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
   )
 }
 
-function StrategyPreview({ desiredChars, desiredWeapons, weaponAfter, showOrdering }) {
+export function StrategyPreview({ desiredChars, desiredWeapons, weaponAfter, showOrdering }) {
   const strategy = buildStrategy(desiredChars, desiredWeapons, showOrdering ? weaponAfter : desiredChars)
   const labels = strategy.map(p => p.banner === 'char' ? `${p.copies} Char` : `${p.copies} Weapon`)
 
