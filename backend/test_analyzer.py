@@ -28,6 +28,14 @@ class TestDescribeGoal:
         assert label == "C0W2"
         assert "2 signature 5★ weapons" in desc
 
+    def test_no_characters_only_weapons(self):
+        # Regression: 0 characters must not become "C-1" or "0 copies of the character".
+        label, desc = describe_goal({"desired_characters": 0, "desired_weapons": 2})
+        assert label == "W2"
+        assert "no character copies" in desc
+        assert "2 signature 5★ weapons" in desc
+        assert "C-1" not in label and "0 copies" not in desc
+
 
 # ---------------------------------------------------------------------------
 # analyze_sim_result — mocked client
