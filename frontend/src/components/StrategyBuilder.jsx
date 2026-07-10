@@ -59,7 +59,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
           >
             <option value={0}>None</option>
-            {[1,2,3,4,5,6].map(n => (
+            {[1,2,3,4,5,6,7].map(n => (
               <option key={n} value={n}>C{n-1} ({n} {n === 1 ? 'copy' : 'copies'})</option>
             ))}
           </select>
