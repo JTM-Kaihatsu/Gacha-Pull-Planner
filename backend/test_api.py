@@ -239,3 +239,65 @@ def test_cors_allows_configured_origin(monkeypatch):
         headers={"Origin": "http://localhost:5173"},
     )
     assert response.headers.get("access-control-allow-origin") == "http://localhost:5173"
+
+
+# --- /advise endpoint -------------------------------------------------------
+def _advise_payload(**overrides):
+    payload = _valid_payload()
+    payload["question"] = "what if I had 40 more pulls?"
+    payload.update(overrides)
+    return payload
+
+
+def test_advise_returns_answer(monkeypatch):
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS | {"initial_pulls": 50})
+    monkeypatch.setattr(main, "run_advisor", lambda *a, **k: "You would reach about 70 percent.")
+
+    client = TestClient(main.app)
+    response = client.post("/advise", json=_advise_payload())
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["answer"] == "You would reach about 70 percent."
+    assert data["status"] == "ok"
+
+
+def test_advise_missing_question_returns_422():
+    client = TestClient(main.app)
+    payload = _valid_payload()  # no "question"
+    assert TestClient(main.app).post("/advise", json=payload).status_code == 422
+
+
+def test_advise_blank_question_returns_422():
+    client = TestClient(main.app)
+    assert client.post("/advise", json=_advise_payload(question="")).status_code == 422
+
+
+def test_advise_degrades_gracefully(monkeypatch):
+    def _boom(*a, **k):
+        raise RuntimeError("openai down")
+
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS | {"initial_pulls": 50})
+    monkeypatch.setattr(main, "run_advisor", _boom)
+
+    client = TestClient(main.app)
+    response = client.post("/advise", json=_advise_payload())
+    assert response.status_code == 200          # not a 500
+    assert response.json()["answer"] is None
+    assert response.json()["status"] == "unavailable"
+
+
+def test_advise_rate_limit_status(monkeypatch):
+    class _RateLimited(Exception):
+        status_code = 429
+
+    def _boom(*a, **k):
+        raise _RateLimited("slow down")
+
+    monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS | {"initial_pulls": 50})
+    monkeypatch.setattr(main, "run_advisor", _boom)
+
+    client = TestClient(main.app)
+    response = client.post("/advise", json=_advise_payload())
+    assert response.status_code == 200
+    assert response.json()["status"] == "rate_limited"

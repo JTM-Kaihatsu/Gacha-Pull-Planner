@@ -12,3 +12,16 @@ export async function analyze(payload) {
   }
   return res.json()
 }
+
+export async function advise(payload) {
+  const res = await fetch(`${API_URL}/advise`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const err = await res.json().catch(() => ({}))
+    throw new Error(err.detail || `Request failed (${res.status})`)
+  }
+  return res.json()
+}
