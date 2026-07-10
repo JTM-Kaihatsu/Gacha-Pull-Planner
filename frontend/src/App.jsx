@@ -7,6 +7,7 @@ import AnalysisBlock from './components/AnalysisBlock'
 import SummaryBlock from './components/SummaryBlock'
 import PullsChart from './components/PullsChart'
 import ScenarioComparison from './components/ScenarioComparison'
+import FollowUpAdvisor from './components/FollowUpAdvisor'
 import AdvancedSettings, { CHAR_DEFAULTS, WEAPON_DEFAULTS } from './components/AdvancedSettings'
 import './index.css'
 
@@ -195,6 +196,8 @@ export default function App() {
             )}
 
             {baseline && <ScenarioComparison baseline={baseline} baselineStats={stats} />}
+
+            {baseline && <FollowUpAdvisor baseline={baseline} />}
 
             <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
               <summary className="text-sm font-medium text-slate-400 select-none">Failed Run Stats</summary>

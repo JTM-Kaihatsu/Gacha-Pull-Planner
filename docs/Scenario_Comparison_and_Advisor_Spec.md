@@ -85,7 +85,7 @@ keyed off the success rate delta:
   flips, not pull count."
 - Negative delta: state the cost plainly.
 
-## Layer 3: Optional open-ended advisor (the only real AI use)
+## Layer 3: Optional open-ended advisor (the only real AI use, implemented)
 
 A free-text box for questions that are not covered by the presets. The model maps an
 open-ended question to a simulation call using tool use, then interprets the result

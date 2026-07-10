@@ -37,9 +37,10 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   breakdown are computed directly from the simulation, not narrated by a model. A
   "Compare Scenarios" panel lets you try one-click what-ifs (more or fewer pulls,
   dropping a copy, changing the pull order) and see the exact delta against your
-  baseline, no model involved. AI is reserved for an optional, open-ended follow-up
-  advisor rather than restating numbers you can already see. See the [Scenario
-  Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
+  baseline, no model involved. AI is reserved for an optional "Ask a follow-up"
+  advisor that answers open-ended what-ifs by re-running the simulation as a tool,
+  rather than restating numbers you can already see. See the [Scenario Comparison
+  and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
 
 **Key product/technical decisions.**
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
@@ -50,7 +51,7 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   and reusable outside the web app.
 
 **Roadmap.** 
-1. *QoL: Expanded structure coverage.* Add more options for different types of banners and 50/50 loss structures. The deterministic read and the one-click scenario comparisons are already shipped; see the [Scenario Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md) for the remaining open-ended advisor layer.
+1. *QoL: Expanded structure coverage.* Add more options for different types of banners and 50/50 loss structures. The deterministic read, the one-click scenario comparisons, and the open-ended AI advisor are all shipped; see the [Scenario Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
 2. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
 3. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
 
@@ -231,6 +232,23 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 | `viz_sample` | array | Per-run phase breakdown sampled for the distribution chart |
 
 Errors return `500` with a `{ "detail": "..." }` body.
+
+### `POST /advise`
+
+The optional open-ended advisor. Takes the same body as `/analyze` plus a
+`question` string (1 to 500 chars). It runs the baseline simulation, then an
+agentic loop that can re-run the simulation as a tool to answer the question,
+comparing against the baseline.
+
+```json
+{ "answer": "With 40 more pulls you would reach about 70 percent...", "status": "ok" }
+```
+
+`status` is `ok`, `rate_limited`, or `unavailable`; `answer` is `null` when it is
+not `ok`. The simulation still runs even if the AI step fails, so an OpenAI outage
+degrades gracefully rather than 500-ing. Guardrails: a capped number of tool calls
+per question, a reduced trial count per run, and argument validation before any
+sim runs.
 
 ---
 
