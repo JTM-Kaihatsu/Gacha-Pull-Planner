@@ -32,13 +32,21 @@ export function buildStrategy(desiredChars, desiredWeapons, weaponAfter) {
   return strategy
 }
 
+export function buildOrderingOptions(desiredChars) {
+  const options = Array.from({ length: desiredChars - 1 }, (_, i) => ({
+    value: i + 1,
+    label: `After C${i}, pull weapon before C${i + 1}`,
+  }))
+  options.push({
+    value: desiredChars,
+    label: `After C${desiredChars - 1}, pull all characters first`,
+  })
+  return options
+}
+
 export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAfter, onChange, validationError }) {
   const showOrdering = desiredChars > 1 && desiredWeapons >= 1
-
-  const orderingOptions = Array.from({ length: desiredChars - 1 }, (_, i) => ({
-    value: i + 1,
-    label: `After C${i} — pull weapon before C${i + 1}`,
-  }))
+  const orderingOptions = buildOrderingOptions(desiredChars)
 
   return (
     <div className="space-y-4">
@@ -51,7 +59,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
             className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-white focus:outline-none focus:border-violet-500"
           >
             <option value={0}>None</option>
-            {[1,2,3,4,5,6].map(n => (
+            {[1,2,3,4,5,6,7].map(n => (
               <option key={n} value={n}>C{n-1} ({n} {n === 1 ? 'copy' : 'copies'})</option>
             ))}
           </select>
@@ -97,19 +105,6 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
                 </span>
               </label>
             ))}
-            <label className="flex items-center gap-3 cursor-pointer group">
-              <input
-                type="radio"
-                name="weaponAfter"
-                value={desiredChars}
-                checked={weaponAfter === desiredChars}
-                onChange={() => onChange('weaponAfter', desiredChars)}
-                className="accent-violet-500"
-              />
-              <span className="text-sm text-slate-300 group-hover:text-white transition-colors">
-                After C{desiredChars - 1} — pull all characters first
-              </span>
-            </label>
           </div>
         </div>
       )}
@@ -126,7 +121,7 @@ export default function StrategyBuilder({ desiredChars, desiredWeapons, weaponAf
   )
 }
 
-function StrategyPreview({ desiredChars, desiredWeapons, weaponAfter, showOrdering }) {
+export function StrategyPreview({ desiredChars, desiredWeapons, weaponAfter, showOrdering }) {
   const strategy = buildStrategy(desiredChars, desiredWeapons, showOrdering ? weaponAfter : desiredChars)
   const labels = strategy.map(p => p.banner === 'char' ? `${p.copies} Char` : `${p.copies} Weapon`)
 

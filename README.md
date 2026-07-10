@@ -34,10 +34,12 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   tool models an ordered strategy (e.g. character → weapon → character) rather than
   treating goals as independent. The model is also able to consider pity for "refunds" from obtaining the 4-star characters on the banner that are already maxed out.
 - **Deterministic by default.** The odds, the distribution, and the failure
-  breakdown are computed directly from the simulation, not narrated by a model. The
-  planned advisor layer reserves AI for open-ended follow-up questions only, rather
-  than restating numbers you can already see. See the [Scenario Comparison and
-  Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
+  breakdown are computed directly from the simulation, not narrated by a model. A
+  "Compare Scenarios" panel lets you try one-click what-ifs (more or fewer pulls,
+  dropping a copy, changing the pull order) and see the exact delta against your
+  baseline, no model involved. AI is reserved for an optional, open-ended follow-up
+  advisor rather than restating numbers you can already see. See the [Scenario
+  Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
 
 **Key product/technical decisions.**
 - Chose **Monte Carlo simulation** over a closed-form probability model: the pity +
@@ -48,7 +50,7 @@ plus their signature weapon") who want a confidence level and a strategy. This w
   and reusable outside the web app.
 
 **Roadmap.** 
-1. *QoL: Expanded structure coverage and a smarter read.* Add more options for different types of banners and 50/50 loss structures. Replace the one-shot LLM verdict with a deterministic read plus one-click scenario comparisons, and reserve AI for open-ended follow-up questions. See the [Scenario Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md).
+1. *QoL: Expanded structure coverage.* Add more options for different types of banners and 50/50 loss structures. The deterministic read and the one-click scenario comparisons are already shipped; see the [Scenario Comparison and Advisor spec](docs/Scenario_Comparison_and_Advisor_Spec.md) for the remaining open-ended advisor layer.
 2. *Feat: Pull Projection.* Allowing users to enter their in-game currency accrual schedule, resulting in a pull amount calculation that can be pipelined into the simulator.
 3. *Feat: Shareable Pull Results.* Create a system for temporarily logging pull results according to a given session ID so users can refer back to/ share their results. Alternatively, create export for users to accomplish the same thing.
 
