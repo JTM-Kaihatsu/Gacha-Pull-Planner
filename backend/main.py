@@ -2,6 +2,7 @@
 """main.py
 FastAPI entrypoint exposing `/analyze`.
 """
+import logging
 from typing import List, Literal
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,6 +12,11 @@ from analyzer import analyze_sim_result
 from summary import build_summary
 from advisor import run_advisor, ADVISOR_TRIALS
 from config import get_openai_api_key, get_allowed_origins
+
+# Log through uvicorn's error logger so messages show in the console and Render
+# logs. The AI steps are wrapped in graceful fallbacks; without this, a failure
+# is invisible (the endpoint just returns status "unavailable").
+logger = logging.getLogger("uvicorn.error")
 
 app = FastAPI()
 
@@ -63,6 +69,7 @@ def analyze(req: SimRequest):
             weapon_pity_config=req.weapon_pity_config.model_dump(),
         )
     except Exception as exc:
+        logger.exception("simulation failed in /analyze")
         raise HTTPException(status_code=500, detail=str(exc))
 
     # The (paid, opt-in) LLM verdict degrades gracefully: a failure here must
@@ -76,7 +83,9 @@ def analyze(req: SimRequest):
             analysis_text = analyze_sim_result(stats)
             analysis_status = "ok"
         except Exception as exc:
-            # OpenAI rate-limit / quota-cap surfaces as HTTP 429.
+            # OpenAI rate-limit / quota-cap surfaces as HTTP 429. Log the real
+            # cause (missing key, bad model, etc.) so it is not invisible.
+            logger.exception("AI verdict failed")
             analysis_status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
 
     return {
@@ -127,12 +136,15 @@ def advise(req: AdviseRequest):
     try:
         baseline_stats = run_simulation_verbose(**baseline_params, trials=ADVISOR_TRIALS)
     except Exception as exc:
+        logger.exception("baseline simulation failed in /advise")
         raise HTTPException(status_code=500, detail=str(exc))
 
     try:
         answer = run_advisor(baseline_params, baseline_stats, req.question)
         status = "ok"
+        logger.info("advisor ok | question=%r | answer=%r", req.question[:120], (answer or "")[:200])
     except Exception as exc:
+        logger.exception("advisor failed | question=%r", req.question[:120])
         answer = None
         status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
 
