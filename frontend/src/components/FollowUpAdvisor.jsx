@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { advise } from '../api'
-import { buildScenarioPayload } from '../lib/scenarios'
+import { buildScenarioPayload, suggestedQuestions } from '../lib/scenarios'
 
 const MAX_QUESTION_LENGTH = 500
 
@@ -9,13 +9,15 @@ const STATUS_MESSAGE = {
   unavailable: "The advisor could not answer right now. Try again later.",
 }
 
-export default function FollowUpAdvisor({ baseline }) {
+export default function FollowUpAdvisor({ baseline, confidence }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState(null)
+  const [runs, setRuns] = useState([])
   const [statusMessage, setStatusMessage] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
+  const suggestions = suggestedQuestions(confidence)
   const trimmed = question.trim()
   const canAsk = trimmed.length > 0 && !loading
 
@@ -24,12 +26,14 @@ export default function FollowUpAdvisor({ baseline }) {
     setLoading(true)
     setError(null)
     setAnswer(null)
+    setRuns([])
     setStatusMessage(null)
     try {
       const payload = { ...buildScenarioPayload(baseline, {}), question: trimmed }
       const data = await advise(payload)
       if (data.status === 'ok' && data.answer) {
         setAnswer(data.answer)
+        setRuns(data.runs || [])
       } else {
         setStatusMessage(STATUS_MESSAGE[data.status] || STATUS_MESSAGE.unavailable)
       }
@@ -49,10 +53,26 @@ export default function FollowUpAdvisor({ baseline }) {
           simulation to answer, so this uses the OpenAI API and may take a moment.
         </p>
 
+        <div>
+          <div className="text-xs text-slate-500 uppercase tracking-wider mb-2">Suggestions</div>
+          <div className="flex flex-wrap gap-2">
+            {suggestions.map((s, i) => (
+              <button
+                key={i}
+                type="button"
+                onClick={() => setQuestion(s)}
+                className="text-xs text-left px-3 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-300 hover:border-violet-500 transition-colors"
+              >
+                {s}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <textarea
           value={question}
           onChange={e => setQuestion(e.target.value.slice(0, MAX_QUESTION_LENGTH))}
-          placeholder="e.g. Is it smarter to wait for the rerun, or push now if I lose my 50/50?"
+          placeholder="Ask your own, or click a suggestion above to start."
           rows={2}
           className="w-full bg-slate-800 border border-slate-700 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-violet-500 resize-none"
         />
@@ -74,6 +94,19 @@ export default function FollowUpAdvisor({ baseline }) {
         {answer && (
           <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
             <div className="text-xs text-violet-400 uppercase tracking-wider mb-2">Advisor</div>
+            {runs.length > 0 && (
+              <div className="flex flex-wrap gap-2 mb-3">
+                {runs.map((r, i) => (
+                  <span
+                    key={i}
+                    className="text-xs font-mono bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-400"
+                    title="A simulation the advisor ran to answer"
+                  >
+                    {r.total_pulls} pulls, {r.desired_characters}C/{r.desired_weapons}W {'→'} {r.success_rate}
+                  </span>
+                ))}
+              </div>
+            )}
             <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{answer}</p>
           </div>
         )}

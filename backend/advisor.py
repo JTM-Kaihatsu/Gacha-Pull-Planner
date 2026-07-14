@@ -131,16 +131,22 @@ SYSTEM_PROMPT = (
     "You are a blunt, no-fluff gacha pull advisor. The user has a baseline "
     "simulation result and is asking an open-ended follow-up. Use the run_simulation "
     "tool to actually test any what-if instead of guessing, then compare the result "
-    "to the baseline and answer in 2 to 4 short sentences. Be honest: if the change "
-    "barely helps or the odds are poor, say so, and do not push the user to spend "
-    "more than they need to. Respect the stated goal and starting conditions: do not "
-    "assume the user wants a character or weapon copy they did not include. "
+    "to the baseline and answer in 2 to 4 short sentences. Always cite the specific "
+    "success rates you got from the tool (for example, at 220 pulls it is 71 percent) "
+    "so your answer is grounded in the numbers. Be honest: if the change barely helps "
+    "or the odds are poor, say so, and do not push the user to spend more than they "
+    "need to. Respect the stated goal and starting conditions: do not assume the user "
+    "wants a character or weapon copy they did not include. If the goal is already a "
+    "single copy, there is nothing to trim, so focus on more pulls or waiting. "
     "No markdown, no headers, no bullet points, no em-dashes."
 )
 
 
 def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_tool_calls=MAX_TOOL_CALLS):
-    """Run the agentic follow-up loop and return the model's answer text."""
+    """Run the agentic follow-up loop.
+
+    Returns (answer_text, runs) where runs is the list of condensed simulation
+    results the model actually ran, so the UI can surface them as receipts."""
     client = OpenAI(api_key=get_openai_api_key())
     model = model or get_model()
 
@@ -151,10 +157,15 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         f"Character pity: {baseline_stats['start_char_pity']}, weapon pity: {baseline_stats['start_weapon_pity']}. "
         f"Baseline success rate: {baseline_stats['success_rate']}."
     )
+    if baseline_stats["desired_characters"] + baseline_stats["desired_weapons"] <= 1:
+        context += " This goal is already a single copy, so there is nothing to trim."
+
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{context}\n\nFollow-up question: {question}"},
     ]
+
+    runs = []
 
     for _ in range(max_tool_calls):
         response = client.chat.completions.create(
@@ -162,7 +173,7 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         )
         msg = response.choices[0].message
         if not msg.tool_calls:
-            return (msg.content or "").strip()
+            return (msg.content or "").strip(), runs
 
         messages.append(_assistant_message(msg))
         for tool_call in msg.tool_calls:
@@ -171,6 +182,8 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             except json.JSONDecodeError:
                 args = {}
             result = _run_tool(args, baseline_params)
+            if "error" not in result:
+                runs.append(result)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
@@ -181,4 +194,4 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     response = client.chat.completions.create(
         model=model, messages=messages, tool_choice="none",
     )
-    return (response.choices[0].message.content or "").strip()
+    return (response.choices[0].message.content or "").strip(), runs

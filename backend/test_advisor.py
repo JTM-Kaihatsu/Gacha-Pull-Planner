@@ -84,22 +84,27 @@ def test_runs_tool_then_answers(monkeypatch):
     monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
     monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
 
-    answer = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "what if I had 160 pulls?")
+    answer, runs = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "what if I had 160 pulls?")
 
     assert answer == "With 160 pulls you're at 80%."
     assert len(fake.calls) == 2
     # The second request carried the tool result back to the model.
     roles = [m["role"] for m in fake.calls[1]["messages"]]
     assert "tool" in roles
+    # The run the model made is surfaced for the UI receipts.
+    assert len(runs) == 1
+    assert runs[0]["total_pulls"] == 160
+    assert runs[0]["success_rate"] == "80.00%"
 
 
 def test_answers_without_tool_call(monkeypatch):
     fake = _FakeClient([_response(_msg(content="You're already comfortable, save your pulls."))])
     monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
 
-    answer = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "should I even bother?")
+    answer, runs = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "should I even bother?")
     assert "save your pulls" in answer
     assert len(fake.calls) == 1
+    assert runs == []                                 # no tool call -> no receipts
 
 
 def test_tool_call_budget_is_capped(monkeypatch):
@@ -112,10 +117,11 @@ def test_tool_call_budget_is_capped(monkeypatch):
     monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
     monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
 
-    answer = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "keep testing", max_tool_calls=3)
+    answer, runs = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "keep testing", max_tool_calls=3)
     assert answer == "Final forced answer."
     assert len(fake.calls) == 4                       # 3 tool loops + 1 forced final
     assert fake.calls[-1]["tool_choice"] == "none"    # final call forbids more tools
+    assert len(runs) == 3                             # each loop ran the tool once
 
 
 class TestToolExecutor:
