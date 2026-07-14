@@ -249,9 +249,10 @@ def _advise_payload(**overrides):
     return payload
 
 
-def test_advise_returns_answer(monkeypatch):
+def test_advise_returns_answer_and_runs(monkeypatch):
+    fake_runs = [{"total_pulls": 90, "desired_characters": 1, "desired_weapons": 1, "success_rate": "70.00%"}]
     monkeypatch.setattr(main, "run_simulation_verbose", lambda **_: _DUMMY_STATS | {"initial_pulls": 50})
-    monkeypatch.setattr(main, "run_advisor", lambda *a, **k: "You would reach about 70 percent.")
+    monkeypatch.setattr(main, "run_advisor", lambda *a, **k: ("You would reach about 70 percent.", fake_runs))
 
     client = TestClient(main.app)
     response = client.post("/advise", json=_advise_payload())
@@ -260,6 +261,7 @@ def test_advise_returns_answer(monkeypatch):
     data = response.json()
     assert data["answer"] == "You would reach about 70 percent."
     assert data["status"] == "ok"
+    assert data["runs"] == fake_runs
 
 
 def test_advise_missing_question_returns_422():

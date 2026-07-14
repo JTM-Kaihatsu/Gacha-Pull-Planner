@@ -101,6 +101,15 @@ Design:
   cost. Reuse the graceful fallback already in place so a rate limit or error shows
   an honest message rather than failing the request.
 
+Anti-slop measures (so a free-text box does not become chat slop):
+- Context-aware suggested questions, chosen by the baseline confidence, that populate
+  the input (they do not auto-send). They steer toward open-ended questions the
+  presets do not cover.
+- Grounded output: the prompt requires the model to cite the specific success rates
+  it got from the tool, and the runs it made are returned and shown as small receipts
+  above the answer (for example "220 pulls, 1C/1W to 71%"), so the answer reads as
+  analysis, not vibes.
+
 If the preset set (Layer 2) turns out to cover the common questions, Layer 3 stays a
 cherry on top rather than a core dependency. That is an acceptable and honest outcome.
 
