@@ -43,25 +43,13 @@ function PityConfigRow({ label, config, onChange, rateMax, pityMax }) {
   )
 }
 
-export default function AdvancedSettings({ charConfig, weaponConfig, onCharChange, onWeaponChange, enableAiAnalysis, onEnableAiAnalysisChange }) {
+export default function AdvancedSettings({ charConfig, weaponConfig, onCharChange, onWeaponChange }) {
   return (
     <details className="group">
       <summary className="text-xs font-semibold text-slate-500 uppercase tracking-wider cursor-pointer select-none hover:text-slate-400 transition-colors">
         Advanced Settings
       </summary>
       <div className="mt-3 space-y-4 pl-1">
-        <label className="flex items-center gap-3 cursor-pointer select-none">
-          <input
-            type="checkbox"
-            checked={enableAiAnalysis}
-            onChange={e => onEnableAiAnalysisChange(e.target.checked)}
-            className="accent-violet-500 w-4 h-4"
-          />
-          <span className="text-sm text-slate-300">
-            Enable AI interpretation
-            <span className="block text-xs text-slate-500 font-normal">Off by default. When on, results include a plain-English AI verdict (uses the OpenAI API).</span>
-          </span>
-        </label>
         <p className="text-xs text-slate-500">
           Override pity rate defaults. The soft pity increase per pull is derived automatically from these three values.
         </p>

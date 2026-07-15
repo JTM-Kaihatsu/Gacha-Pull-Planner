@@ -3,7 +3,6 @@ import { analyze } from './api'
 import PityInputs from './components/PityInputs'
 import StrategyBuilder, { buildStrategy } from './components/StrategyBuilder'
 import StatCard from './components/StatCard'
-import AnalysisBlock from './components/AnalysisBlock'
 import SummaryBlock from './components/SummaryBlock'
 import PullsChart from './components/PullsChart'
 import ScenarioComparison from './components/ScenarioComparison'
@@ -33,7 +32,6 @@ export default function App() {
   const [full4StarChars, setFull4StarChars] = useState(true)
   const [charPityConfig, setCharPityConfig] = useState({ ...CHAR_DEFAULTS })
   const [weaponPityConfig, setWeaponPityConfig]     = useState({ ...WEAPON_DEFAULTS })
-  const [enableAiAnalysis, setEnableAiAnalysis]     = useState(false)
 
   function handleFormChange(key, value) {
     setForm(f => ({ ...f, [key]: value }))
@@ -74,7 +72,6 @@ export default function App() {
         ...form,
         strategy,
         full_4star_chars: full4StarChars,
-        enable_ai_analysis: enableAiAnalysis,
         char_pity_config: charPityConfig,
         weapon_pity_config: weaponPityConfig,
       })
@@ -134,8 +131,6 @@ export default function App() {
             weaponConfig={weaponPityConfig}
             onCharChange={setCharPityConfig}
             onWeaponChange={setWeaponPityConfig}
-            enableAiAnalysis={enableAiAnalysis}
-            onEnableAiAnalysisChange={setEnableAiAnalysis}
           />
 
           <div>
@@ -239,10 +234,6 @@ export default function App() {
                 </div>
               </div>
             </details>
-
-            {result.analysis_status && result.analysis_status !== 'disabled' && (
-              <AnalysisBlock text={result.analysis_text} status={result.analysis_status} />
-            )}
           </div>
         )}
       </div>
