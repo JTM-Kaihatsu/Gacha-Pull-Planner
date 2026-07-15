@@ -67,17 +67,16 @@ character/weapon pull strategy:
 **Configurable Pity:** Override base rate, soft-pity start, and hard pity per banner
 to match any game (this is what makes the engine game-agnostic):
 
-![Advanced settings — configurable pity curves](docs/advanced-settings.png)
+![Advanced settings, configurable pity curves](docs/adv-settings.png)
 
 **Pull-Distribution Chart:** Every sampled run as a stacked bar (successes on the
 left, failures on the right), with a per-phase breakdown on hover:
 
 ![Pull distribution chart with per-run tooltip](docs/chart-tooltip.png)
 
-**Optional AI Verdict:** A blunt, plain-English read on your odds (opt-in, off by
-default):
+**Follow-Up (AI):** Enable the AI to rerun simulations based on a natural-language question about pull planning. Has suggested questions based on the current simulation results.
 
-![AI analysis](docs/ai-analysis.png)
+![Ask a follow-up (AI)](docs/follow-up.png)
 
 **Failure Analysis:** The most common ways a run falls short:
 
