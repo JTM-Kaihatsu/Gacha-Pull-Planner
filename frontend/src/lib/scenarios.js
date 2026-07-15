@@ -31,9 +31,6 @@ export function buildScenarioPayload(baseline, overrides = {}) {
     total_pulls: overrides.total_pulls ?? baseline.form.total_pulls,
     strategy,
     full_4star_chars: baseline.full4StarChars,
-    // Scenario comparisons are a quick, deterministic aside; never spend the
-    // AI budget on them regardless of the main form's toggle.
-    enable_ai_analysis: false,
     char_pity_config: baseline.charPityConfig,
     weapon_pity_config: baseline.weaponPityConfig,
   }
