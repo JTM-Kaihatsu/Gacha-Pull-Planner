@@ -72,7 +72,7 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
       <div className="mt-4 space-y-5">
         <p className="text-xs text-slate-500">
           Build a what-if against your baseline result, then compare. This re-runs
-          the simulation and never uses the optional AI verdict.
+          the simulation instantly and uses no AI.
         </p>
 
         <ScenarioGroup label="What if I changed my pull budget?">

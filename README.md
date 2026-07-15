@@ -124,7 +124,7 @@ The backend lives in [`backend/`](backend/) and the frontend in [`frontend/`](fr
 ```bash
 cd backend
 pip install -r requirements.txt
-echo "OPENAI_API_KEY=sk-..." > .env      # optional — only needed if you enable the AI verdict
+echo "OPENAI_API_KEY=sk-..." > .env      # optional, only needed for the AI follow-up advisor
 uvicorn main:app --reload
 ```
 
@@ -163,7 +163,6 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
     { "banner": "char",   "copies": 1 }
   ],
   "full_4star_chars": true,
-  "enable_ai_analysis": false,
   "char_pity_config":   { "base_rate": 0.006, "soft_pity_start": 73, "hard_pity": 90 },
   "weapon_pity_config": { "base_rate": 0.008, "soft_pity_start": 65, "hard_pity": 80 }
 }
@@ -178,7 +177,6 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 | `start_weapon_guarantee` | bool | Next 5★ weapon is guaranteed the featured one (no 75/25) |
 | `strategy` | array | **Ordered** phases: each `{ "banner": "char" \| "weapon", "copies": int }`. Order matters — pity carries across phases. |
 | `full_4star_chars` | bool | If true, duplicate 4★ characters are treated as refunded pulls |
-| `enable_ai_analysis` | bool | Default `false`. If true, runs the OpenAI verdict and populates `analysis_text`; otherwise the analyzer is skipped (no API call) and `analysis_text` is `null` |
 | `char_pity_config` | object | `base_rate`, `soft_pity_start`, `hard_pity` for the character banner |
 | `weapon_pity_config` | object | Same three fields for the weapon banner |
 
@@ -191,8 +189,6 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
     "headline": "This is close to a coin flip.",
     "notes": ["On the runs that succeed, you finish with about 6 pulls to spare.", "..."]
   },
-  "analysis_text": "You need to win both 50/50s...",
-  "analysis_status": "ok",
   "trials": 10000,
   "stats_summary": {
     "success_rate": "46.75%",
@@ -217,8 +213,6 @@ Runs the simulation and returns aggregated stats plus an AI analysis.
 | Field | Type | Description |
 |-------|------|-------------|
 | `summary` | object | Deterministic, always-present plain-language read: a `confidence` label (`comfortable` / `likely` / `coin_flip` / `stretch` / `long_shot`), a `headline`, and a list of `notes`. Computed by rules, no model, no cost |
-| `analysis_text` | string\|null | Optional LLM verdict; `null` unless `enable_ai_analysis` was `true` |
-| `analysis_status` | string | `disabled`, `ok`, `rate_limited`, or `unavailable` (see the graceful fallback below) |
 | `trials` | int | Number of Monte Carlo trials (10,000) |
 | `success_rate` | string | % of trials that met the full goal |
 | `avg_pity_char` / `avg_pity_weapon` | float | Avg pity at which the 5★ hit, on successful runs |
@@ -271,19 +265,20 @@ React/Vite frontend on **Vercel**, both on free tiers. Config lives in
 **[DEPLOY.md](DEPLOY.md)** for the step-by-step (deploy order, `ALLOWED_ORIGINS` ↔
 `VITE_API_URL` wiring, and cost notes).
 
-The AI verdict is off by default, but can be turned on; cost limits are set on the
-OpenAI side to prevent abuse. It also degrades gracefully: the AI call is decoupled
-from the simulation, so if the OpenAI API is rate-limited or returns an error, the
-simulation results and chart still render and the verdict section shows an honest
-"temporarily unavailable" message instead of failing the whole request.
+The only AI feature is the opt-in follow-up advisor, which runs only when a user asks
+a question; set cost limits on the OpenAI side to prevent abuse. It also degrades
+gracefully: the AI call is decoupled from the simulation, so if the OpenAI API is
+rate-limited or returns an error, the deterministic results still render and the
+advisor shows an honest "temporarily unavailable" message instead of failing.
 
 ---
 
 ## Notes & limitations
 
-- The AI verdict is **opt-in and off by default**. `/analyze` only calls the OpenAI
-  API when `enable_ai_analysis` is `true`; the simulation, stats, and chart never
-  require a key. The OpenAI key lives in `.env` (gitignored); never commit it. If you
-  expose a public demo with the AI verdict enabled, set a spend cap on your OpenAI key.
+- The only AI feature is the **opt-in follow-up advisor** (`/advise`), which calls the
+  OpenAI API only when a user asks a question. The simulation, the deterministic read,
+  the stats, and the chart never require a key. The OpenAI key lives in `.env`
+  (gitignored); never commit it. Set a spend cap on your OpenAI key before exposing a
+  public demo.
 - Pity/guarantee/refund rates model common gacha systems but are simplifications;
   tune the pity configs to match a specific game.
