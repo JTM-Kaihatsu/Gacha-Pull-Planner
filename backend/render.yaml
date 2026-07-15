@@ -16,7 +16,7 @@ services:
     healthCheckPath: /docs
     envVars:
       - key: OPENAI_API_KEY
-        sync: false            # set in the dashboard; only needed if the AI toggle is used
+        sync: false            # set in the dashboard; only needed for the AI follow-up advisor
       - key: ALLOWED_ORIGINS
         sync: false            # your deployed frontend origin, e.g. https://your-app.vercel.app
       - key: OPENAI_MODEL

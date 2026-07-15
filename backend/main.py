@@ -8,7 +8,6 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from simulation import run_simulation_verbose
-from analyzer import analyze_sim_result
 from summary import build_summary
 from advisor import run_advisor, ADVISOR_TRIALS
 from config import get_openai_api_key, get_allowed_origins
@@ -44,7 +43,6 @@ class SimRequest(BaseModel):
     start_weapon_guarantee: bool = False
     strategy: List[PhaseRequest] = Field(..., min_length=1)
     full_4star_chars: bool = True
-    enable_ai_analysis: bool = False
     char_pity_config: PityConfig = PityConfig()
     weapon_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
@@ -72,27 +70,9 @@ def analyze(req: SimRequest):
         logger.exception("simulation failed in /analyze")
         raise HTTPException(status_code=500, detail=str(exc))
 
-    # The (paid, opt-in) LLM verdict degrades gracefully: a failure here must
-    # never take down the simulation result. Report status so the UI can show
-    # an honest "unavailable" message instead of silently dropping the section.
-    analysis_text = None
-    if not req.enable_ai_analysis:
-        analysis_status = "disabled"
-    else:
-        try:
-            analysis_text = analyze_sim_result(stats)
-            analysis_status = "ok"
-        except Exception as exc:
-            # OpenAI rate-limit / quota-cap surfaces as HTTP 429. Log the real
-            # cause (missing key, bad model, etc.) so it is not invisible.
-            logger.exception("AI verdict failed")
-            analysis_status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
-
     return {
             # Deterministic, always-computed plain-language read (no model, no cost).
             "summary": build_summary(stats),
-            "analysis_text": analysis_text,
-            "analysis_status": analysis_status,
             "trials": stats["trials"],
             "stats_summary": {
                 "success_rate": stats["success_rate"],

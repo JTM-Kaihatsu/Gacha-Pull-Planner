@@ -21,7 +21,7 @@ first, then the frontend, then point them at each other.
    | Key | Value |
    |-----|-------|
    | `ALLOWED_ORIGINS` | your frontend URL (fill in after step 2 below), e.g. `https://your-app.vercel.app` |
-   | `OPENAI_API_KEY` | your key — **only needed if you use the AI toggle** (see below) |
+   | `OPENAI_API_KEY` | your key, **only needed for the AI follow-up advisor** (see below) |
    | `OPENAI_MODEL` | `gpt-4o` (optional) |
 5. Deploy. Note the URL, e.g. `https://gacha-pull-simulator-api.onrender.com`.
    Confirm it's up by visiting `<url>/docs` (Swagger UI).
@@ -52,14 +52,14 @@ which calls the Render backend.
 
 ---
 
-## Cost & the AI toggle
+## Cost & the AI advisor
 
 - **Hosting** is free on both tiers (trade-off: slow first backend request when idle).
-- **The AI interpretation is the only thing that costs money** (OpenAI usage on your
-  key). It is **off by default** — `enable_ai_analysis` defaults to `false`, so the
-  public demo runs the full simulation and chart **without any OpenAI calls**. Users
-  opt in via **Advanced Settings → Enable AI interpretation**.
+- **The follow-up advisor is the only thing that costs money** (OpenAI usage on your
+  key). It runs **only when a user asks a question** in "Ask a Follow-up", so the rest
+  of the app (simulation, the deterministic read, and the chart) runs with **no OpenAI
+  calls**.
 - If you leave `OPENAI_API_KEY` unset on Render, the app still works fully; only the
-  optional AI verdict is unavailable (enabling it without a key returns a 500).
+  advisor is unavailable (it degrades gracefully rather than erroring).
 - Recommended: set a **hard monthly spend cap** in your OpenAI dashboard (e.g. $5) as
   a safety net before sharing a public link.
