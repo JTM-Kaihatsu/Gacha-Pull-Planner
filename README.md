@@ -74,6 +74,13 @@ left, failures on the right), with a per-phase breakdown on hover:
 
 ![Pull distribution chart with per-run tooltip](docs/chart-tooltip.png)
 
+**Compare Scenarios:** Build a what-if against your baseline (adjust the pull
+budget or the character/weapon goal), then re-run instantly for a
+baseline-vs-scenario delta on success rate, leftover pulls, and the most common
+failure. Fully deterministic, no AI:
+
+![Compare Scenarios, deterministic baseline-vs-scenario what-ifs](docs/compare-scenarios.png)
+
 **Follow-Up (AI):** Enable the AI to rerun simulations based on a natural-language question about pull planning. Has suggested questions based on the current simulation results.
 
 ![Ask a follow-up (AI)](docs/follow-up.png)
@@ -87,19 +94,26 @@ left, failures on the right), with a per-phase breakdown on hover:
 ## Architecture
 
 ```
-React + Vite frontend  ──POST /analyze──▶  FastAPI backend
-  (form, chart, results)                     ├─ simulation.py  (Monte Carlo engine, pure)
-                                             └─ analyzer.py    (LLM natural-language verdict)
+React + Vite frontend  ──POST /analyze──▶  FastAPI backend (main.py)
+  (form, chart, results,                     ├─ simulation.py  (Monte Carlo engine, pure)
+   scenario compare,     ──POST /advise──▶   ├─ summary.py     (deterministic plain-language read)
+   follow-up)                                ├─ advisor.py     (AI follow-up: grounded tool-calling loop)
+                                             └─ analyzer.py    (goal phrasing helper)
 ```
 
-- **`simulation.py`** — the engine. Runs 10,000 trials of an ordered pull strategy,
+- **`simulation.py`**: the engine. Runs 10,000 trials of an ordered pull strategy,
   modeling soft/hard pity, 50/50 & 75/25 outcomes, guarantees, and 4★ refunds. Pure
   functions, no I/O.
-- **`main.py`** — FastAPI app exposing a single `POST /analyze` endpoint.
-- **`analyzer.py`** — turns the aggregated stats into a short plain-English analysis
-  via the OpenAI API.
-- **`frontend/`** — React 19 + Vite + Tailwind UI, with a Recharts pull-distribution
-  visualization.
+- **`main.py`**: FastAPI app exposing `POST /analyze` (run a strategy) and
+  `POST /advise` (the AI follow-up).
+- **`summary.py`**: builds the deterministic, always-shown plain-language read of a
+  result (confidence, margin, key lever). No AI.
+- **`advisor.py`**: the only AI feature. Maps a free-text question to grounded
+  `run_simulation` tool calls and answers from the runs, with guardrails.
+- **`analyzer.py`**: small deterministic helper that phrases the goal
+  (`describe_goal`) for display.
+- **`frontend/`**: React 19 + Vite + Tailwind UI, with a Recharts pull-distribution
+  visualization, one-click scenario comparisons, and the follow-up advisor.
 
 ## Tech stack
 
