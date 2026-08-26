@@ -4,10 +4,14 @@ extraction call pulls out of a free-text question) against the baseline goal.
 
 No OpenAI calls happen here and no math happens in the model: the extraction
 call reports only raw, explicitly-stated numbers (pulls spent per banner,
-4-star refunds received per banner), and this module does every subtraction.
-advisor.py is the only caller, and only re-invokes the extraction model when
-this module reports an inconsistency.
+4-star refunds received per banner, any additional pulls or extra copies
+mentioned), and this module does every subtraction and addition. advisor.py
+is the only caller, and only re-invokes the extraction model when this
+module reports an inconsistency.
 """
+
+MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
+MAX_WEAPON_COPIES = 5     # W1-W5
 
 
 def _net_pulls_used(extracted):
@@ -26,20 +30,27 @@ def _net_pulls_used(extracted):
 
 def _resolve_total_pulls(extracted, baseline_total_pulls):
     """Figure out pulls remaining from whichever combination of fields the
-    question stated. Returns (total_pulls, error)."""
+    question stated. `additional_pulls_stated` is an amount to add on top of
+    whatever remains (e.g. "plus about 45 more from this patch"), separate
+    from a direct restatement of the total. Returns (total_pulls, error)."""
     stated = extracted.get("pulls_remaining_stated")
     restated_total = extracted.get("total_pulls_restated")
+    additional = extracted.get("additional_pulls_stated") or 0
     net_used = _net_pulls_used(extracted)
+
+    if additional < 0:
+        return None, f"additional_pulls_stated ({additional}) cannot be negative"
 
     computed = None
     base = restated_total if restated_total is not None else baseline_total_pulls
     if net_used is not None:
-        computed = base - net_used
+        computed = base - net_used + additional
 
     if stated is not None and computed is not None and stated != computed:
         return None, (
             f"pulls_remaining_stated ({stated}) does not reconcile with net pulls used "
-            f"({net_used}) against total_pulls ({base}) = {computed}"
+            f"({net_used}) plus additional_pulls_stated ({additional}) against "
+            f"total_pulls ({base}) = {computed}"
         )
 
     if stated is not None:
@@ -70,6 +81,19 @@ def _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls,
         parts.append("character 50/50 lost, guarantee active")
     if extracted.get("weapon_guarantee_active") and weapons_remaining >= 1:
         parts.append("weapon 50/50 lost, guarantee active")
+
+    additional_chars = extracted.get("additional_character_copies_wanted") or 0
+    additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
+    if additional_chars:
+        parts.append(f"goal expanded by {additional_chars} extra character cop"
+                      f"{'y' if additional_chars == 1 else 'ies'}")
+    if additional_weapons:
+        parts.append(f"goal expanded by {additional_weapons} extra weapon"
+                      f"{'' if additional_weapons == 1 else 's'}")
+
+    additional_pulls = extracted.get("additional_pulls_stated") or 0
+    if additional_pulls:
+        parts.append(f"plus {additional_pulls} more pulls stated")
 
     situation = ", ".join(parts) if parts else "no prior progress stated"
 
@@ -102,8 +126,17 @@ def reconcile(extracted, baseline_params, baseline_stats):
     if not extracted.get("has_session_context"):
         return {"applies": False}
 
-    desired_characters = baseline_stats["desired_characters"]
-    desired_weapons = baseline_stats["desired_weapons"]
+    additional_chars = extracted.get("additional_character_copies_wanted") or 0
+    additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
+    desired_characters = baseline_stats["desired_characters"] + additional_chars
+    desired_weapons = baseline_stats["desired_weapons"] + additional_weapons
+
+    if desired_characters > MAX_CHARACTER_COPIES:
+        return {"applies": True, "ok": False,
+                "error": f"requested character copies ({desired_characters}) exceed the max of {MAX_CHARACTER_COPIES}"}
+    if desired_weapons > MAX_WEAPON_COPIES:
+        return {"applies": True, "ok": False,
+                "error": f"requested weapon copies ({desired_weapons}) exceed the max of {MAX_WEAPON_COPIES}"}
 
     char_obtained = bool(extracted.get("character_obtained"))
     weapon_obtained = bool(extracted.get("weapon_obtained"))
