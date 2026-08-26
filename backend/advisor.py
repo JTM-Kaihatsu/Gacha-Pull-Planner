@@ -56,13 +56,29 @@ SESSION_STATE_SCHEMA = {
             "description": "4-star refund pulls received back during that weapon-banner spending, if stated. Do not subtract this yourself.",
         },
         "weapon_guarantee_active": {"type": ["boolean", "null"]},
-        "pulls_remaining_stated": {"type": ["integer", "null"]},
+        "pulls_remaining_stated": {
+            "type": ["integer", "null"],
+            "description": "A direct, total restatement of pulls remaining (e.g. 'I have 41 pulls left'). Do not use this for an amount meant to be added on top of the remaining pulls; use additional_pulls_stated for that instead.",
+        },
+        "additional_pulls_stated": {
+            "type": ["integer", "null"],
+            "description": "An amount of pulls stated as an ADDITION on top of whatever remains, not a total (e.g. 'plus around 45 more from this patch', 'and I'll get another 20 next week'). Report the raw number only; do not add it to anything yourself.",
+        },
         "total_pulls_restated": {"type": ["integer", "null"]},
+        "additional_character_copies_wanted": {
+            "type": ["integer", "null"],
+            "description": "Extra character copies wanted BEYOND the original goal (e.g. 'another character copy' = 1). Do not use this for the original goal itself, only for a stated expansion of it.",
+        },
+        "additional_weapon_copies_wanted": {
+            "type": ["integer", "null"],
+            "description": "Extra weapon copies wanted BEYOND the original goal, same rule as additional_character_copies_wanted.",
+        },
     },
     "required": [
         "has_session_context", "character_obtained", "character_pulls_spent", "character_refunds",
         "character_guarantee_active", "weapon_obtained", "weapon_pulls_spent", "weapon_refunds",
-        "weapon_guarantee_active", "pulls_remaining_stated", "total_pulls_restated",
+        "weapon_guarantee_active", "pulls_remaining_stated", "additional_pulls_stated",
+        "total_pulls_restated", "additional_character_copies_wanted", "additional_weapon_copies_wanted",
     ],
     "additionalProperties": False,
 }
@@ -70,12 +86,16 @@ SESSION_STATE_SCHEMA = {
 EXTRACTION_SYSTEM_PROMPT = (
     "You extract structured facts from a gacha pull follow-up question. Do not do "
     "any math and do not decide a strategy. Never net a refund against a pulls-spent "
-    "figure yourself; report both raw numbers separately and let the caller subtract "
-    "them. Only report what the user explicitly stated: whether the character and/or "
-    "weapon were already obtained, the raw (pre-refund) pulls spent on each banner if "
-    "given, any 4-star refunds received on each banner if given, whether a 50/50 was "
-    "lost leaving a guarantee, and any pull counts mentioned (pulls explicitly "
-    "remaining, or a restated total). Leave a field null if the question does not "
+    "figure yourself, and never add an additional-pulls figure to a remaining-pulls "
+    "figure yourself; report every raw number separately and let the caller do all "
+    "arithmetic. Only report what the user explicitly stated: whether the character "
+    "and/or weapon were already obtained, the raw (pre-refund) pulls spent on each "
+    "banner if given, any 4-star refunds received on each banner if given, whether a "
+    "50/50 was lost leaving a guarantee, any pull counts mentioned (a direct total "
+    "restatement goes in pulls_remaining_stated; an amount to add on top of whatever "
+    "remains goes in additional_pulls_stated instead, never combined), and any extra "
+    "copies wanted beyond the original goal (additional_character_copies_wanted / "
+    "additional_weapon_copies_wanted). Leave a field null if the question does not "
     "state it. Set has_session_context to false if the question is a pure "
     "hypothetical with no real session history."
 )
@@ -233,7 +253,10 @@ SYSTEM_PROMPT = (
 def _reconcile_session_state(client, model, question, baseline_params, baseline_stats):
     """Extract any real-progress narrative from the question and reconcile it
     deterministically. Retries the extraction once if session_state.reconcile
-    flags an inconsistency; otherwise falls through as if there were none."""
+    flags an inconsistency. If it still cannot reconcile, returns
+    applies=True, ok=False rather than silently discarding the narrative, so
+    the caller can tell the user reconciliation failed instead of quietly
+    answering from the unadjusted baseline as if nothing had been stated."""
     extracted = _extract_session_state(client, model, question, baseline_stats)
     if not extracted.get("has_session_context"):
         return {"applies": False}
@@ -242,14 +265,17 @@ def _reconcile_session_state(client, model, question, baseline_params, baseline_
     if reconciled["ok"]:
         return reconciled
 
+    first_error = reconciled["error"]
     extracted = _extract_session_state(
-        client, model, question, baseline_stats, error_feedback=reconciled["error"],
+        client, model, question, baseline_stats, error_feedback=first_error,
     )
     if not extracted.get("has_session_context"):
-        return {"applies": False}
+        return {"applies": True, "ok": False, "error": first_error}
 
     reconciled = reconcile(extracted, baseline_params, baseline_stats)
-    return reconciled if reconciled["ok"] else {"applies": False}
+    if reconciled["ok"]:
+        return reconciled
+    return {"applies": True, "ok": False, "error": reconciled["error"]}
 
 
 def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_tool_calls=MAX_TOOL_CALLS):
@@ -276,7 +302,7 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     breakdown = None
 
     reconciled = _reconcile_session_state(client, model, question, baseline_params, baseline_stats)
-    if reconciled.get("applies"):
+    if reconciled.get("applies") and reconciled.get("ok"):
         breakdown = reconciled["breakdown"]
         context = (
             f"Verified session state (already reconciled from the question, treat as fact "
@@ -301,6 +327,24 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             "start_weapon_pity": reconciled["start_weapon_pity"],
             "start_weapon_guarantee": reconciled["start_weapon_guarantee"],
         }
+    elif reconciled.get("applies"):
+        # The question described real session progress, but it could not be
+        # reliably reconciled into a consistent pull count or goal even after
+        # a corrective retry. Say so plainly instead of quietly answering
+        # from the unadjusted baseline as if nothing had been stated.
+        breakdown = (
+            "Could not verify the pull progress described in this question "
+            "(the stated numbers did not add up consistently). Answering "
+            "from the original goal instead, so this may not reflect your "
+            "actual session."
+        )
+        context += (
+            " The question described session progress, but it could not be "
+            "reliably reconciled into a consistent pull count or goal. "
+            "Explicitly tell the user you could not verify their stated "
+            "progress and that this answer uses the original baseline goal "
+            "instead, so it may not reflect their actual session."
+        )
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

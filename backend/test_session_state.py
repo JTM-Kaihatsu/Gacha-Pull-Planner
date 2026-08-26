@@ -25,7 +25,9 @@ def _blank(**overrides):
         "character_guarantee_active": None,
         "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_remaining_stated": None, "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "total_pulls_restated": None,
+        "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
     base.update(overrides)
     return base
@@ -124,3 +126,51 @@ def test_pulls_spent_out_of_range_returns_error():
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is False
     assert "out of range" in result["error"]
+
+
+def test_additional_pulls_stated_adds_on_top_of_computed_remaining():
+    # The second bug report: "plus around 45 more" is an addition on top of
+    # whatever remains, not a restatement of the total. Net used = 59 out of
+    # 100, so remaining is 41, plus the stated 45 more = 86.
+    extracted = _blank(
+        character_obtained=True, character_pulls_spent=42, character_refunds=11,
+        weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
+        weapon_guarantee_active=True, additional_pulls_stated=45,
+    )
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is True
+    assert result["total_pulls"] == 86
+    assert "86 pulls remaining" in result["breakdown"]
+
+
+def test_additional_copies_wanted_expands_the_goal():
+    # "another character copy" on top of the original 1-character goal means
+    # the total desired grows to 2; 1 is already obtained, so 1 remains.
+    extracted = _blank(
+        character_obtained=True,
+        weapon_obtained=False, weapon_guarantee_active=True,
+        additional_character_copies_wanted=1, pulls_remaining_stated=41,
+    )
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is True
+    assert {"banner": "char", "copies": 1} in result["strategy"]
+    assert {"banner": "weapon", "copies": 1} in result["strategy"]
+    assert "1 extra character copy" in result["breakdown"]
+
+
+def test_requested_copies_exceeding_max_return_error():
+    extracted = _blank(
+        character_obtained=False, weapon_obtained=False,
+        additional_character_copies_wanted=10, pulls_remaining_stated=50,
+    )
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is False
+    assert "exceed the max" in result["error"]
+
+
+def test_negative_additional_pulls_returns_error():
+    extracted = _blank(character_obtained=True, weapon_obtained=False,
+                        additional_pulls_stated=-5, pulls_remaining_stated=10)
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is False
+    assert "cannot be negative" in result["error"]

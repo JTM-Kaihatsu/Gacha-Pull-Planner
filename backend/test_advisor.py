@@ -63,7 +63,9 @@ def _no_session_context():
         "character_guarantee_active": None,
         "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_remaining_stated": None, "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "total_pulls_restated": None,
+        "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     })
 
 
@@ -74,7 +76,9 @@ def _extraction_response(**overrides):
         "character_guarantee_active": None,
         "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_remaining_stated": None, "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "total_pulls_restated": None,
+        "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
     payload.update(overrides)
     return _response(_msg(content=json.dumps(payload)))
@@ -210,7 +214,10 @@ class TestSessionStateIntegration:
         assert seen_kwargs["start_weapon_guarantee"] is True
         assert answer == "With the guarantee your weapon odds are strong."
 
-    def test_retries_extraction_once_then_falls_back_to_baseline(self, monkeypatch):
+    def test_retries_extraction_once_then_surfaces_the_failure(self, monkeypatch):
+        # A reconciliation that never resolves must NOT silently answer from
+        # the unadjusted baseline as if nothing had been stated, the user
+        # needs to see that their described progress could not be verified.
         tc = _tool_call("c1", "run_simulation", json.dumps({}))
         fake = _FakeClient([
             # First extraction: pulls figures conflict, reconcile rejects it.
@@ -224,16 +231,20 @@ class TestSessionStateIntegration:
                 pulls_remaining_stated=41, weapon_pulls_spent=60, total_pulls_restated=120,
             ),
             _response(_msg(content=None, tool_calls=[tc])),
-            _response(_msg(content="Fell back to the baseline goal.")),
+            _response(_msg(content="Could not verify your progress, using the baseline goal.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
 
         answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "confusing question")
 
-        assert breakdown is None                      # gave up and fell through
+        assert breakdown is not None
+        assert "Could not verify" in breakdown        # the caveat is visible, not silent
         assert len(fake.calls) == 4                    # 2 extractions + 1 tool loop + 1 answer
-        assert answer == "Fell back to the baseline goal."
+        assert answer == "Could not verify your progress, using the baseline goal."
+        # It still ran the actual simulation on the unadjusted baseline, since
+        # there's no reliable reconciled state to use instead.
+        assert len(runs) == 1
 
     def test_goal_already_complete_skips_simulation(self, monkeypatch):
         fake = _FakeClient([
@@ -250,6 +261,56 @@ class TestSessionStateIntegration:
         assert runs == []                              # nothing was simulated
         assert answer == "You already have everything you need."
         assert fake.calls[-1]["tool_choice"] == "none"  # no tool offered for this path
+
+    def test_expands_goal_and_adds_extra_pulls_on_top_of_remaining(self, monkeypatch):
+        # Second real bug report: "another character copy" (goal expansion)
+        # plus "+ around 45 from this half of the patch" (an addition on top
+        # of whatever remains, not a restatement of the total). 100 total,
+        # 42 pity minus 11 refunds and 31 pulls minus 3 refunds already spent
+        # (net 59), so remaining is 41, plus the stated 45 more = 86. The
+        # goal grows to 2 characters (1 already obtained, 1 more wanted) and
+        # 1 weapon (guaranteed).
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        tc = _tool_call("c1", "run_simulation", json.dumps({}))
+        fake = _FakeClient([
+            _extraction_response(
+                character_obtained=True, character_pulls_spent=42, character_refunds=11,
+                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
+                weapon_guarantee_active=True,
+                additional_pulls_stated=45,
+                additional_character_copies_wanted=1,
+            ),
+            _response(_msg(content=None, tool_calls=[tc])),
+            _response(_msg(content="With the extra pulls, both goals are within reach.")),
+        ])
+        seen_kwargs = {}
+
+        def _spy_sim(**kwargs):
+            seen_kwargs.update(kwargs)
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "I got the character at 42 pity with 11 refunds, then used 31 pulls on the "
+            "weapon with 3 refunds and lost the 50/50. How likely am I to get the "
+            "lightcone and another character copy with my remaining pulls plus "
+            "around 45 more from this half of the patch?",
+        )
+
+        assert breakdown is not None
+        assert "86 pulls remaining" in breakdown  # 41 net remaining + 45 additional
+        assert seen_kwargs["total_pulls"] == 86
+        # 1 more character copy wanted (the one already obtained is dropped),
+        # plus the still-needed weapon.
+        assert {"banner": "char", "copies": 1} in seen_kwargs["strategy"]
+        assert {"banner": "weapon", "copies": 1} in seen_kwargs["strategy"]
+        assert seen_kwargs["start_weapon_guarantee"] is True
+        assert answer == "With the extra pulls, both goals are within reach."
 
 
 class TestToolExecutor:
