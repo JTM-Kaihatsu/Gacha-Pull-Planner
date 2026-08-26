@@ -59,24 +59,22 @@ BASELINE_STATS = {
 def _no_session_context():
     return json.dumps({
         "has_session_context": False,
-        "character_obtained": None, "character_pity_at_obtain": None,
+        "character_obtained": None, "character_pulls_spent": None, "character_refunds": None,
         "character_guarantee_active": None,
-        "weapon_obtained": None, "weapon_pity_at_obtain": None,
+        "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_used_so_far": None, "pulls_remaining_stated": None,
-        "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "total_pulls_restated": None,
     })
 
 
 def _extraction_response(**overrides):
     payload = {
         "has_session_context": True,
-        "character_obtained": None, "character_pity_at_obtain": None,
+        "character_obtained": None, "character_pulls_spent": None, "character_refunds": None,
         "character_guarantee_active": None,
-        "weapon_obtained": None, "weapon_pity_at_obtain": None,
+        "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_used_so_far": None, "pulls_remaining_stated": None,
-        "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "total_pulls_restated": None,
     }
     payload.update(overrides)
     return _response(_msg(content=json.dumps(payload)))
@@ -166,15 +164,22 @@ class TestSessionStateIntegration:
     only the weapon, from 0 pity, with the guarantee, not the original
     full 1C/1W goal."""
 
-    def test_reduces_goal_before_the_model_ever_sees_it(self, monkeypatch):
+    def test_reduces_goal_and_nets_refunds_before_the_model_ever_sees_it(self, monkeypatch):
         # The model calls the tool with no overrides, so whatever it actually
         # simulates comes straight from the reconciled run_params fallback.
+        # Numbers mirror the original bug report exactly: 100 total pulls, 42
+        # pity minus 11 refunds on the character, 31 pulls minus 3 refunds on
+        # the weapon, net used is 59, so 41 pulls should remain (not
+        # 100-42-31=27, which is what a naive gross subtraction would give).
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
         tc = _tool_call("c1", "run_simulation", json.dumps({}))
         fake = _FakeClient([
             _extraction_response(
-                character_obtained=True, character_pity_at_obtain=42,
-                weapon_obtained=False, weapon_guarantee_active=True,
-                pulls_remaining_stated=41,
+                character_obtained=True, character_pulls_spent=42, character_refunds=11,
+                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
+                weapon_guarantee_active=True,
             ),
             _response(_msg(content=None, tool_calls=[tc])),
             _response(_msg(content="With the guarantee your weapon odds are strong.")),
@@ -189,14 +194,16 @@ class TestSessionStateIntegration:
         monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
 
         answer, runs, breakdown = run_advisor(
-            BASELINE_PARAMS, BASELINE_STATS,
-            "I got the character at 42 pity, lost the weapon 50/50, how likely am I with my 41 pulls left?",
+            params, stats,
+            "I got the character at 42 pity with 11 refunds, then used 31 pulls on the "
+            "weapon with 3 refunds and lost the 50/50, how likely am I with my remaining pulls?",
         )
 
         assert breakdown is not None
         assert "42 pity" in breakdown
         assert "41 pulls remaining" in breakdown
-        # The actual simulation ran on just the weapon, from scratch, guaranteed.
+        # The actual simulation ran on just the weapon, from scratch, guaranteed,
+        # with pulls netted of refunds, not the naive gross subtraction.
         assert seen_kwargs["strategy"] == [{"banner": "weapon", "copies": 1}]
         assert seen_kwargs["total_pulls"] == 41
         assert seen_kwargs["start_weapon_pity"] == 0
@@ -209,12 +216,12 @@ class TestSessionStateIntegration:
             # First extraction: pulls figures conflict, reconcile rejects it.
             _extraction_response(
                 character_obtained=True, weapon_obtained=False,
-                pulls_remaining_stated=41, pulls_used_so_far=50, total_pulls_restated=120,
+                pulls_remaining_stated=41, weapon_pulls_spent=50, total_pulls_restated=120,
             ),
             # Retry still doesn't resolve it (still conflicting).
             _extraction_response(
                 character_obtained=True, weapon_obtained=False,
-                pulls_remaining_stated=41, pulls_used_so_far=60, total_pulls_restated=120,
+                pulls_remaining_stated=41, weapon_pulls_spent=60, total_pulls_restated=120,
             ),
             _response(_msg(content=None, tool_calls=[tc])),
             _response(_msg(content="Fell back to the baseline goal.")),

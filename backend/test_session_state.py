@@ -21,12 +21,11 @@ BASELINE_STATS = {
 def _blank(**overrides):
     base = {
         "has_session_context": True,
-        "character_obtained": None, "character_pity_at_obtain": None,
+        "character_obtained": None, "character_pulls_spent": None, "character_refunds": None,
         "character_guarantee_active": None,
-        "weapon_obtained": None, "weapon_pity_at_obtain": None,
+        "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
         "weapon_guarantee_active": None,
-        "pulls_used_so_far": None, "pulls_remaining_stated": None,
-        "total_pulls_restated": None,
+        "pulls_remaining_stated": None, "total_pulls_restated": None,
     }
     base.update(overrides)
     return base
@@ -38,10 +37,12 @@ def test_applies_false_when_no_session_context():
 
 
 def test_drops_satisfied_banner_and_defaults_pity_to_zero():
+    # No weapon pulls stated yet (the question is purely about the character
+    # phase), so pulls remaining is computed from the character spend alone:
+    # 100 - 42 = 58.
     extracted = _blank(
-        character_obtained=True, character_pity_at_obtain=42,
+        character_obtained=True, character_pulls_spent=42,
         weapon_obtained=False, weapon_guarantee_active=True,
-        pulls_remaining_stated=41,
     )
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
 
@@ -49,27 +50,42 @@ def test_drops_satisfied_banner_and_defaults_pity_to_zero():
     assert result["goal_complete"] is False
     assert result["pulls_exhausted"] is False
     assert result["strategy"] == [{"banner": "weapon", "copies": 1}]
-    assert result["total_pulls"] == 41
+    assert result["total_pulls"] == 58
     assert result["start_char_pity"] == 0
     assert result["start_char_guarantee"] is False
     assert result["start_weapon_pity"] == 0
     assert result["start_weapon_guarantee"] is True
     assert "42 pity" in result["breakdown"]
     assert "guarantee active" in result["breakdown"]
-    assert "41 pulls remaining" in result["breakdown"]
+    assert "58 pulls remaining" in result["breakdown"]
 
 
-def test_computes_remaining_pulls_from_pulls_used_so_far():
-    extracted = _blank(character_obtained=True, weapon_obtained=False, pulls_used_so_far=59)
+def test_computes_remaining_pulls_net_of_refunds():
+    # The bug this schema exists to prevent: 42 pity minus 11 refunds on the
+    # character, 31 pulls minus 3 refunds on the weapon, out of 100 total.
+    # Net used = 31 + 28 = 59, so 41 should remain, not 100 - 42 - 31 = 27.
+    extracted = _blank(
+        character_obtained=True, character_pulls_spent=42, character_refunds=11,
+        weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
+        weapon_guarantee_active=True,
+    )
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is True
-    assert result["total_pulls"] == 100 - 59
+    assert result["total_pulls"] == 41
+
+
+def test_refunds_exceeding_pulls_spent_return_error():
+    extracted = _blank(character_obtained=True, weapon_obtained=False,
+                        weapon_pulls_spent=10, weapon_refunds=15, pulls_remaining_stated=50)
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is False
+    assert "exceeds" in result["error"]
 
 
 def test_conflicting_pull_counts_return_error():
     extracted = _blank(
         character_obtained=True, weapon_obtained=False,
-        pulls_remaining_stated=41, pulls_used_so_far=50, total_pulls_restated=100,
+        pulls_remaining_stated=41, weapon_pulls_spent=50, total_pulls_restated=100,
     )
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["applies"] is True
@@ -102,8 +118,8 @@ def test_pulls_exhausted():
     assert "no pulls remain" in result["breakdown"]
 
 
-def test_pity_out_of_range_returns_error():
-    extracted = _blank(character_obtained=False, weapon_obtained=True, weapon_pity_at_obtain=999,
+def test_pulls_spent_out_of_range_returns_error():
+    extracted = _blank(character_obtained=False, weapon_obtained=True, weapon_pulls_spent=999,
                         pulls_remaining_stated=10)
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is False
