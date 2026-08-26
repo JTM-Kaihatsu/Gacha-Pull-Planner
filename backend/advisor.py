@@ -245,7 +245,13 @@ SYSTEM_PROMPT = (
     "or the odds are poor, say so, and do not push the user to spend more than they "
     "need to. Respect the stated goal and starting conditions: do not assume the user "
     "wants a character or weapon copy they did not include. If the goal is already a "
-    "single copy, there is nothing to trim, so focus on more pulls or waiting. "
+    "single copy, there is nothing to trim, so focus on more pulls or waiting. Pity "
+    "for a banner resets to 0 the instant a 5-star of that banner's type is obtained, "
+    "whether it was the desired item or a losing 50/50 result, and character and "
+    "weapon pity are independent of each other. Never assume a previous pity count "
+    "carries forward into a new phase after a 5-star was already obtained on that "
+    "banner, and never present that as an open question or a second, higher-odds "
+    "scenario: it is not a matter of interpretation. "
     "No markdown, no headers, no bullet points, no em-dashes."
 )
 
@@ -300,17 +306,19 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
 
     run_params = baseline_params
     breakdown = None
+    runs = []
 
     reconciled = _reconcile_session_state(client, model, question, baseline_params, baseline_stats)
     if reconciled.get("applies") and reconciled.get("ok"):
         breakdown = reconciled["breakdown"]
-        context = (
-            f"Verified session state (already reconciled from the question, treat as fact "
-            f"and do not restate it differently): {breakdown} "
-            f"Original full goal was {goal_description} (goal {goal_label})."
-        )
+
         if reconciled["goal_complete"] or reconciled["pulls_exhausted"]:
             # Nothing left to simulate, so answer directly from the verified state.
+            context = (
+                f"Verified session state (already reconciled from the question, treat as "
+                f"fact and do not restate it differently): {breakdown} "
+                f"Original full goal was {goal_description} (goal {goal_label})."
+            )
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"{context}\n\nFollow-up question: {question}"},
@@ -327,6 +335,28 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             "start_weapon_pity": reconciled["start_weapon_pity"],
             "start_weapon_guarantee": reconciled["start_weapon_guarantee"],
         }
+
+        # Run the reconciled scenario ourselves, right now, rather than
+        # trusting the model to call the tool with the correct parameters.
+        # Prompt-only instructions repeatedly failed to stop it re-deriving
+        # (and double-counting) the pull count itself; a result that already
+        # exists before the model's first turn can't be gotten wrong.
+        primary_result = _condense(run_simulation_verbose(**run_params, trials=ADVISOR_TRIALS))
+        runs.append(primary_result)
+        context = (
+            f"Verified session state (already reconciled from the question, treat as fact "
+            f"and do not restate it differently): {breakdown} "
+            f"Original full goal was {goal_description} (goal {goal_label}). "
+            f"A simulation on this exact verified state has ALREADY been run for you: "
+            f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
+            f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
+            f"most common failure state {primary_result['most_common_failure_state']}. Use this "
+            f"as your primary answer; cite these exact numbers. Only call run_simulation again "
+            f"if the question explicitly asks about a further, different scenario, and if so "
+            f"derive any different total_pulls only by adding to or subtracting from the "
+            f"{run_params['total_pulls']} figure above, never by recomputing it from the raw "
+            f"figures in the question yourself."
+        )
     elif reconciled.get("applies"):
         # The question described real session progress, but it could not be
         # reliably reconciled into a consistent pull count or goal even after
@@ -350,8 +380,6 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{context}\n\nFollow-up question: {question}"},
     ]
-
-    runs = []
 
     for _ in range(max_tool_calls):
         response = client.chat.completions.create(

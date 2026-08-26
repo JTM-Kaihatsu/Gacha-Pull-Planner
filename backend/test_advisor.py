@@ -205,7 +205,7 @@ class TestSessionStateIntegration:
 
         assert breakdown is not None
         assert "42 pity" in breakdown
-        assert "41 pulls remaining" in breakdown
+        assert "41 total pulls remaining" in breakdown
         # The actual simulation ran on just the weapon, from scratch, guaranteed,
         # with pulls netted of refunds, not the naive gross subtraction.
         assert seen_kwargs["strategy"] == [{"banner": "weapon", "copies": 1}]
@@ -213,6 +213,41 @@ class TestSessionStateIntegration:
         assert seen_kwargs["start_weapon_pity"] == 0
         assert seen_kwargs["start_weapon_guarantee"] is True
         assert answer == "With the guarantee your weapon odds are strong."
+
+    def test_reconciled_scenario_is_simulated_before_the_model_gets_a_turn(self, monkeypatch):
+        # Third real bug: even with explicit instructions, the model kept
+        # re-deriving (and double-counting) the pull total itself. The fix
+        # is to not depend on the model at all for the primary number: run
+        # the reconciled scenario in code and hand the model an answer that
+        # already exists, before its first turn. Here the model never calls
+        # the tool at all, so if the receipt is present, it can only have
+        # come from the deterministic pre-run, not from the model.
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        fake = _FakeClient([
+            _extraction_response(
+                character_obtained=True, character_pulls_spent=42, character_refunds=11,
+                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
+                weapon_guarantee_active=True,
+            ),
+            _response(_msg(content="With the guarantee, 41 pulls gives strong odds.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "I got the character at 42 pity with 11 refunds, then used 31 pulls on the "
+            "weapon with 3 refunds and lost the 50/50, how likely am I with my remaining pulls?",
+        )
+
+        assert len(runs) == 1                     # the pre-run, with no model tool call at all
+        assert runs[0]["total_pulls"] == 41
+        assert answer == "With the guarantee, 41 pulls gives strong odds."
+        # Only 2 model calls total: the extraction, then the answer. The
+        # model was never given a chance to pick its own total_pulls.
+        assert len(fake.calls) == 2
 
     def test_retries_extraction_once_then_surfaces_the_failure(self, monkeypatch):
         # A reconciliation that never resolves must NOT silently answer from
@@ -303,7 +338,8 @@ class TestSessionStateIntegration:
         )
 
         assert breakdown is not None
-        assert "86 pulls remaining" in breakdown  # 41 net remaining + 45 additional
+        assert "86 total pulls remaining" in breakdown  # 41 net remaining + 45 additional
+        assert "already includes the 45 additional pulls" in breakdown
         assert seen_kwargs["total_pulls"] == 86
         # 1 more character copy wanted (the one already obtained is dropped),
         # plus the still-needed weapon.
