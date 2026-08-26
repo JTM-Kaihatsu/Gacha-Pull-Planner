@@ -1,0 +1,151 @@
+"""session_state.py
+Deterministic reconciliation of a mid-session narrative (what the advisor's
+extraction call pulls out of a free-text question) against the baseline goal.
+
+No OpenAI calls happen here and no math happens in the model: this module
+takes the model's structured extraction, does all the arithmetic in plain
+Python, and validates it for internal consistency. advisor.py is the only
+caller, and only re-invokes the extraction model when this module reports an
+inconsistency.
+"""
+
+
+def _resolve_total_pulls(extracted, baseline_total_pulls):
+    """Figure out pulls remaining from whichever combination of fields the
+    question stated. Returns (total_pulls, error)."""
+    stated = extracted.get("pulls_remaining_stated")
+    used = extracted.get("pulls_used_so_far")
+    restated_total = extracted.get("total_pulls_restated")
+
+    computed = None
+    if used is not None:
+        base = restated_total if restated_total is not None else baseline_total_pulls
+        computed = base - used
+
+    if stated is not None and computed is not None and stated != computed:
+        base = restated_total if restated_total is not None else baseline_total_pulls
+        return None, (
+            f"pulls_remaining_stated ({stated}) does not reconcile with "
+            f"total_pulls ({base}) minus pulls_used_so_far ({used}) = {computed}"
+        )
+
+    if stated is not None:
+        return stated, None
+    if computed is not None:
+        return computed, None
+    return None, "could not determine pulls remaining: no pulls_remaining_stated or pulls_used_so_far given"
+
+
+def _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls,
+                      goal_complete=False, pulls_exhausted=False):
+    parts = []
+    if extracted.get("character_obtained"):
+        pity = extracted.get("character_pity_at_obtain")
+        parts.append(f"character secured{f' at {pity} pity' if pity is not None else ''}")
+    if extracted.get("weapon_obtained"):
+        pity = extracted.get("weapon_pity_at_obtain")
+        parts.append(f"weapon secured{f' at {pity} pity' if pity is not None else ''}")
+    if extracted.get("character_guarantee_active") and chars_remaining >= 1:
+        parts.append("character 50/50 lost, guarantee active")
+    if extracted.get("weapon_guarantee_active") and weapons_remaining >= 1:
+        parts.append("weapon 50/50 lost, guarantee active")
+
+    situation = ", ".join(parts) if parts else "no prior progress stated"
+
+    if goal_complete:
+        return f"{situation}. Goal already complete, nothing left to pull for."
+
+    needed = []
+    if chars_remaining >= 1:
+        needed.append(f"{chars_remaining} character cop{'y' if chars_remaining == 1 else 'ies'}")
+    if weapons_remaining >= 1:
+        needed.append(f"{weapons_remaining} weapon{'s' if weapons_remaining != 1 else ''}")
+    needed_str = " and ".join(needed)
+
+    if pulls_exhausted:
+        return f"{situation}. Still need {needed_str}, but no pulls remain."
+    return f"{situation}. Still need {needed_str}, with {total_pulls} pulls remaining."
+
+
+def reconcile(extracted, baseline_params, baseline_stats):
+    """Turn the extraction model's structured output into a verified,
+    ready-to-simulate state, or a specific error to feed back for one
+    corrective re-extraction.
+
+    Returns a dict. `applies` is False when the question had no session
+    narrative to reconcile (a pure hypothetical), the caller should fall
+    through to the existing baseline-driven flow. When `applies` is True,
+    `ok` says whether reconciliation succeeded; on failure `error` names the
+    specific inconsistency for the retry prompt.
+    """
+    if not extracted.get("has_session_context"):
+        return {"applies": False}
+
+    desired_characters = baseline_stats["desired_characters"]
+    desired_weapons = baseline_stats["desired_weapons"]
+
+    char_obtained = bool(extracted.get("character_obtained"))
+    weapon_obtained = bool(extracted.get("weapon_obtained"))
+
+    chars_remaining = max(desired_characters - (1 if char_obtained else 0), 0)
+    weapons_remaining = max(desired_weapons - (1 if weapon_obtained else 0), 0)
+
+    char_hard_pity = baseline_params["char_pity_config"]["hard_pity"]
+    weapon_hard_pity = baseline_params["weapon_pity_config"]["hard_pity"]
+    at_obtain_char = extracted.get("character_pity_at_obtain")
+    at_obtain_weapon = extracted.get("weapon_pity_at_obtain")
+    if at_obtain_char is not None and not (0 <= at_obtain_char <= char_hard_pity):
+        return {"applies": True, "ok": False,
+                "error": f"character_pity_at_obtain ({at_obtain_char}) is out of range 0-{char_hard_pity}"}
+    if at_obtain_weapon is not None and not (0 <= at_obtain_weapon <= weapon_hard_pity):
+        return {"applies": True, "ok": False,
+                "error": f"weapon_pity_at_obtain ({at_obtain_weapon}) is out of range 0-{weapon_hard_pity}"}
+
+    total_pulls, error = _resolve_total_pulls(extracted, baseline_params["total_pulls"])
+    if error:
+        return {"applies": True, "ok": False, "error": error}
+
+    if chars_remaining == 0 and weapons_remaining == 0:
+        return {
+            "applies": True, "ok": True, "goal_complete": True, "pulls_exhausted": False,
+            "strategy": [], "total_pulls": total_pulls,
+            "start_char_pity": 0, "start_char_guarantee": False,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False,
+            "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining,
+                                           total_pulls, goal_complete=True),
+        }
+
+    if total_pulls <= 0:
+        return {
+            "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": True,
+            "strategy": [], "total_pulls": 0,
+            "start_char_pity": 0, "start_char_guarantee": False,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False,
+            "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining,
+                                           0, pulls_exhausted=True),
+        }
+
+    # Preserve the baseline's relative pull order for whichever banners remain.
+    strategy = [
+        {"banner": phase["banner"],
+         "copies": chars_remaining if phase["banner"] == "char" else weapons_remaining}
+        for phase in baseline_params["strategy"]
+        if (phase["banner"] == "char" and chars_remaining >= 1)
+        or (phase["banner"] == "weapon" and weapons_remaining >= 1)
+    ]
+    present_banners = {p["banner"] for p in strategy}
+    if chars_remaining >= 1 and "char" not in present_banners:
+        strategy.append({"banner": "char", "copies": chars_remaining})
+    if weapons_remaining >= 1 and "weapon" not in present_banners:
+        strategy.append({"banner": "weapon", "copies": weapons_remaining})
+
+    return {
+        "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": False,
+        "strategy": strategy,
+        "total_pulls": total_pulls,
+        "start_char_pity": 0,
+        "start_char_guarantee": bool(extracted.get("character_guarantee_active")) if chars_remaining >= 1 else False,
+        "start_weapon_pity": 0,
+        "start_weapon_guarantee": bool(extracted.get("weapon_guarantee_active")) if weapons_remaining >= 1 else False,
+        "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls),
+    }

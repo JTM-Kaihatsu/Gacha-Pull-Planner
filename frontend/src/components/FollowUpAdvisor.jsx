@@ -13,6 +13,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState(null)
   const [runs, setRuns] = useState([])
+  const [breakdown, setBreakdown] = useState(null)
   const [statusMessage, setStatusMessage] = useState(null)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -27,6 +28,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
     setError(null)
     setAnswer(null)
     setRuns([])
+    setBreakdown(null)
     setStatusMessage(null)
     try {
       const payload = { ...buildScenarioPayload(baseline, {}), question: trimmed }
@@ -34,6 +36,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
       if (data.status === 'ok' && data.answer) {
         setAnswer(data.answer)
         setRuns(data.runs || [])
+        setBreakdown(data.breakdown || null)
       } else {
         setStatusMessage(STATUS_MESSAGE[data.status] || STATUS_MESSAGE.unavailable)
       }
@@ -94,6 +97,12 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         {answer && (
           <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
             <div className="text-xs text-violet-400 uppercase tracking-wider mb-2">Advisor</div>
+            {breakdown && (
+              <div className="text-xs font-mono bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-400 mb-3">
+                <span className="text-slate-500 uppercase tracking-wider mr-1">Parsed situation:</span>
+                {breakdown}
+              </div>
+            )}
             {runs.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-3">
                 {runs.map((r, i) => (

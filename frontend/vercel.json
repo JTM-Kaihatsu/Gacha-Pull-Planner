@@ -9,7 +9,7 @@
       "headers": [
         {
           "key": "Content-Security-Policy",
-          "value": "frame-ancestors 'self' https://www.jtm-kaihatsu.com https://jtm-kaihatsu.com"
+          "value": "frame-ancestors 'self' https://www.jtm-kaihatsu.com https://jtm-kaihatsu.com https://takeshi-miclat-portfolio.vercel.app"
         }
       ]
     }

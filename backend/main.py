@@ -120,8 +120,9 @@ def advise(req: AdviseRequest):
         raise HTTPException(status_code=500, detail=str(exc))
 
     runs = []
+    breakdown = None
     try:
-        answer, runs = run_advisor(baseline_params, baseline_stats, req.question)
+        answer, runs, breakdown = run_advisor(baseline_params, baseline_stats, req.question)
         status = "ok"
         logger.info("advisor ok | question=%r | answer=%r", req.question[:120], (answer or "")[:200])
     except Exception as exc:
@@ -129,4 +130,4 @@ def advise(req: AdviseRequest):
         answer = None
         status = "rate_limited" if getattr(exc, "status_code", None) == 429 else "unavailable"
 
-    return {"answer": answer, "status": status, "runs": runs}
+    return {"answer": answer, "status": status, "runs": runs, "breakdown": breakdown}
