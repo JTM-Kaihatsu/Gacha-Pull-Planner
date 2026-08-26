@@ -37,33 +37,47 @@ SESSION_STATE_SCHEMA = {
             ),
         },
         "character_obtained": {"type": ["boolean", "null"]},
-        "character_pity_at_obtain": {"type": ["integer", "null"]},
+        "character_pulls_spent": {
+            "type": ["integer", "null"],
+            "description": "Raw pulls put into the character banner this session (equals pity if obtained; the gross count, not yet reduced by any refund).",
+        },
+        "character_refunds": {
+            "type": ["integer", "null"],
+            "description": "4-star refund pulls received back during that character-banner spending, if stated. Do not subtract this yourself.",
+        },
         "character_guarantee_active": {"type": ["boolean", "null"]},
         "weapon_obtained": {"type": ["boolean", "null"]},
-        "weapon_pity_at_obtain": {"type": ["integer", "null"]},
+        "weapon_pulls_spent": {
+            "type": ["integer", "null"],
+            "description": "Raw pulls put into the weapon banner this session (gross count, not yet reduced by any refund).",
+        },
+        "weapon_refunds": {
+            "type": ["integer", "null"],
+            "description": "4-star refund pulls received back during that weapon-banner spending, if stated. Do not subtract this yourself.",
+        },
         "weapon_guarantee_active": {"type": ["boolean", "null"]},
-        "pulls_used_so_far": {"type": ["integer", "null"]},
         "pulls_remaining_stated": {"type": ["integer", "null"]},
         "total_pulls_restated": {"type": ["integer", "null"]},
     },
     "required": [
-        "has_session_context", "character_obtained", "character_pity_at_obtain",
-        "character_guarantee_active", "weapon_obtained", "weapon_pity_at_obtain",
-        "weapon_guarantee_active", "pulls_used_so_far", "pulls_remaining_stated",
-        "total_pulls_restated",
+        "has_session_context", "character_obtained", "character_pulls_spent", "character_refunds",
+        "character_guarantee_active", "weapon_obtained", "weapon_pulls_spent", "weapon_refunds",
+        "weapon_guarantee_active", "pulls_remaining_stated", "total_pulls_restated",
     ],
     "additionalProperties": False,
 }
 
 EXTRACTION_SYSTEM_PROMPT = (
     "You extract structured facts from a gacha pull follow-up question. Do not do "
-    "any math and do not decide a strategy. Only report what the user explicitly "
-    "stated: whether the character and/or weapon were already obtained (and at "
-    "what pity, if stated), whether a 50/50 was lost leaving a guarantee, and any "
-    "pull counts mentioned (pulls already used, pulls explicitly remaining, or a "
-    "restated total). Leave a field null if the question does not state it. Set "
-    "has_session_context to false if the question is a pure hypothetical with no "
-    "real session history."
+    "any math and do not decide a strategy. Never net a refund against a pulls-spent "
+    "figure yourself; report both raw numbers separately and let the caller subtract "
+    "them. Only report what the user explicitly stated: whether the character and/or "
+    "weapon were already obtained, the raw (pre-refund) pulls spent on each banner if "
+    "given, any 4-star refunds received on each banner if given, whether a 50/50 was "
+    "lost leaving a guarantee, and any pull counts mentioned (pulls explicitly "
+    "remaining, or a restated total). Leave a field null if the question does not "
+    "state it. Set has_session_context to false if the question is a pure "
+    "hypothetical with no real session history."
 )
 
 RUN_SIMULATION_TOOL = {
