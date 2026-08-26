@@ -91,10 +91,6 @@ def _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls,
         parts.append(f"goal expanded by {additional_weapons} extra weapon"
                       f"{'' if additional_weapons == 1 else 's'}")
 
-    additional_pulls = extracted.get("additional_pulls_stated") or 0
-    if additional_pulls:
-        parts.append(f"plus {additional_pulls} more pulls stated")
-
     situation = ", ".join(parts) if parts else "no prior progress stated"
 
     if goal_complete:
@@ -109,7 +105,13 @@ def _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls,
 
     if pulls_exhausted:
         return f"{situation}. Still need {needed_str}, but no pulls remain."
-    return f"{situation}. Still need {needed_str}, with {total_pulls} pulls remaining."
+
+    # additional_pulls_stated is already folded into total_pulls by this point
+    # (see _resolve_total_pulls); say so explicitly so the interpretation
+    # model doesn't add it a second time on top of this final figure.
+    additional_pulls = extracted.get("additional_pulls_stated") or 0
+    pulls_note = f" (already includes the {additional_pulls} additional pulls you mentioned)" if additional_pulls else ""
+    return f"{situation}. Still need {needed_str}, with {total_pulls} total pulls remaining{pulls_note}."
 
 
 def reconcile(extracted, baseline_params, baseline_stats):

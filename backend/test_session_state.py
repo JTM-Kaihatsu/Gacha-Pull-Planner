@@ -59,7 +59,7 @@ def test_drops_satisfied_banner_and_defaults_pity_to_zero():
     assert result["start_weapon_guarantee"] is True
     assert "42 pity" in result["breakdown"]
     assert "guarantee active" in result["breakdown"]
-    assert "58 pulls remaining" in result["breakdown"]
+    assert "58 total pulls remaining" in result["breakdown"]
 
 
 def test_computes_remaining_pulls_net_of_refunds():
@@ -140,7 +140,10 @@ def test_additional_pulls_stated_adds_on_top_of_computed_remaining():
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is True
     assert result["total_pulls"] == 86
-    assert "86 pulls remaining" in result["breakdown"]
+    assert "86 total pulls remaining" in result["breakdown"]
+    # The note that this already includes the addition guards against the
+    # interpretation model adding it a second time on top of this figure.
+    assert "already includes the 45 additional pulls" in result["breakdown"]
 
 
 def test_additional_copies_wanted_expands_the_goal():
