@@ -44,32 +44,28 @@ export function isValidPullDelta(baselineTotalPulls, delta) {
 
 // One suggestion per bucket is swapped for a dynamic question templated
 // from the user's own goal shape, so the advisor's event-sequence parsing
-// (session_state.py) is demonstrated with a concrete, ready-to-send example
-// rather than left for the user to discover unprompted. Numbers are
-// illustrative (derived from the configured pity), not predictions.
+// (session_state.py) is demonstrated with a ready-to-adapt example rather
+// than left for the user to discover unprompted. Bracketed spans are
+// literal placeholders, not illustrative numbers: a concrete-but-fake
+// number would look exactly like a real answer if sent unedited, whereas a
+// literal [PLACEHOLDER] either gets replaced or, if sent as-is, fails to
+// parse and the advisor asks the user to rephrase rather than confidently
+// answering against a fabricated pull history.
 function dynamicEventQuestion(baseline) {
   const chars = baseline?.desiredChars ?? 0
   const weapons = baseline?.desiredWeapons ?? 0
-  const charHardPity = baseline?.charPityConfig?.hard_pity ?? 90
-  const weaponHardPity = baseline?.weaponPityConfig?.hard_pity ?? 80
-  const totalPulls = baseline?.form?.total_pulls ?? 180
 
   if (chars >= 1 && weapons >= 1) {
-    const pullsLeft = Math.max(totalPulls - Math.round(charHardPity * 0.6), 10)
-    return `I lost the first run at the character banner and I have ${pullsLeft} pulls left. How likely am I to still achieve my goal? Would I need to win every banner run to achieve it?`
+    return 'I lost the first run at the character banner and I have [NUMBER OF PULLS LEFT] pulls left. How likely am I to still achieve my goal? Would I need to win every banner run to achieve it?'
   }
   if (chars >= 2) {
-    const pity1 = Math.round(charHardPity * 0.25)
-    const pity2 = Math.round(charHardPity * 0.6)
-    return `I lost my first character copy early, at ${pity1} pity and got 4 pulls back as a refund, then I won that guarantee after ${pity2} pulls and got 6 pulls back. Is it worth it to keep trying for the remaining character copies?`
+    return 'I lost my first character copy early, at [NUMBER OF PULLS USED] pity and got [NUMBER OF REFUNDED PULLS] pulls back as a refund, then I won that guarantee after [NUMBER OF PULLS USED] and got [NUMBER OF REFUNDED PULLS]. Is it worth it to keep trying for the remaining character copies?'
   }
   if (chars === 1) {
-    const pulls = Math.round(charHardPity * 0.6)
-    return `I lost the character after ${pulls} pulls, is it worth it for me to keep pulling?`
+    return 'I lost the character after [NUMBER OF PULLS] pulls, is it worth it for me to keep pulling?'
   }
   // weapons-only goal: mirror the single-copy phrasing for the weapon banner
-  const pulls = Math.round(weaponHardPity * 0.6)
-  return `I lost the weapon after ${pulls} pulls, is it worth it for me to keep pulling?`
+  return 'I lost the weapon after [NUMBER OF PULLS] pulls, is it worth it for me to keep pulling?'
 }
 
 // Context-aware starter questions for the follow-up advisor, chosen by how the

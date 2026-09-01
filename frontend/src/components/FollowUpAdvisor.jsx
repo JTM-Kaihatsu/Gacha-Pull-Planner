@@ -1,7 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { advise } from '../api'
 import { buildScenarioPayload, suggestedQuestions } from '../lib/scenarios'
 import ParsedSituation from './ParsedSituation'
+
+// Suggested questions may carry a literal [PLACEHOLDER] the user is meant
+// to replace with their own number, not an illustrative one: a concrete-
+// but-fake number would look exactly like a real answer if sent unedited.
+const PLACEHOLDER_PATTERN = /\[[^\]]+\]/
 
 const MAX_QUESTION_LENGTH = 500
 
@@ -22,6 +27,26 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   const suggestions = suggestedQuestions(confidence, baseline)
   const trimmed = question.trim()
   const canAsk = trimmed.length > 0 && !loading
+  const textareaRef = useRef(null)
+  const pendingSelectionRef = useRef(null)
+
+  function handleSuggestionClick(s) {
+    setQuestion(s)
+    const match = s.match(PLACEHOLDER_PATTERN)
+    pendingSelectionRef.current = match ? [match.index, match.index + match[0].length] : null
+  }
+
+  // Applying the selection here (after the DOM has actually picked up the
+  // new value) is reliable; guessing a frame via requestAnimationFrame in
+  // the click handler above raced React's own re-render and lost.
+  useEffect(() => {
+    const pending = pendingSelectionRef.current
+    const el = textareaRef.current
+    if (!pending || !el) return
+    el.focus()
+    el.setSelectionRange(pending[0], pending[1])
+    pendingSelectionRef.current = null
+  }, [question])
 
   async function handleAsk() {
     if (!canAsk) return
@@ -64,7 +89,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
               <button
                 key={i}
                 type="button"
-                onClick={() => setQuestion(s)}
+                onClick={() => handleSuggestionClick(s)}
                 className="text-xs text-left px-3 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-300 hover:border-violet-500 transition-colors"
               >
                 {s}
@@ -74,6 +99,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         </div>
 
         <textarea
+          ref={textareaRef}
           value={question}
           onChange={e => setQuestion(e.target.value.slice(0, MAX_QUESTION_LENGTH))}
           placeholder="Ask your own, or click a suggestion above to start."
