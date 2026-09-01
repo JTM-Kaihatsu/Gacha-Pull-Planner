@@ -61,32 +61,33 @@ def test_reproduces_the_original_bug_report_exactly():
     assert {"banner": "weapon", "copies": 1} in result["strategy"]
 
     labels = [line["label"] for line in result["lines"]]
-    assert "Character Run 1 (obtained 1)" in labels
-    assert "Weapon Run 1 (obtained 0)" in labels
+    assert "Character Run 1 (obtained 1 of 2)" in labels
+    assert "Weapon Run 1 (obtained 0 of 1)" in labels
     assert "Additional Pulls Mentioned" in labels
-    assert "Character Run 2 (obtained 1)" in labels   # the current, in-progress attempt
-    assert "Weapon Run 2 (obtained 0)" in labels
+    assert "Character Run 2 (obtained 1 of 2)" in labels   # the current, in-progress attempt
+    assert "Weapon Run 2 (obtained 0 of 1)" in labels
     assert "Restated Goal" in labels
 
-    char_run_1 = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1)")
+    char_run_1 = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 2)")
     values = [p["value"] for p in char_run_1["pills"]]
-    assert values == [100, "−", 42, "+", 11, 69, "WIN"]
+    assert values == [100, "−", 42, "+", 11, "=", 69, "WIN"]
     assert char_run_1["pills"][-1]["color"] == "green"
+    assert char_run_1["pills"][5]["color"] == "magenta"  # the "=" operator
 
-    weapon_run_1 = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0)")
+    weapon_run_1 = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0 of 1)")
     assert weapon_run_1["pills"][-1]["value"] == "LOSS"
     assert weapon_run_1["pills"][-1]["color"] == "red"
-    assert [p["value"] for p in weapon_run_1["pills"][:6]] == [69, "−", 31, "+", 3, 41]
+    assert [p["value"] for p in weapon_run_1["pills"][:7]] == [69, "−", 31, "+", 3, "=", 41]
 
     goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
     assert goal_line["pills"][0]["value"] == "1 character and 1 weapon → 2 characters and 1 weapon"
 
-    char_run_2 = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 1)")
+    char_run_2 = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 1 of 2)")
     assert char_run_2["pills"][0]["value"] == 86
     assert char_run_2["pills"][1]["value"] == "GUARANTEE: FALSE"
     assert char_run_2["pills"][1]["color"] == "red"
 
-    weapon_run_2 = next(l for l in result["lines"] if l["label"] == "Weapon Run 2 (obtained 0)")
+    weapon_run_2 = next(l for l in result["lines"] if l["label"] == "Weapon Run 2 (obtained 0 of 1)")
     assert weapon_run_2["pills"][1]["value"] == "GUARANTEE: TRUE"
     assert weapon_run_2["pills"][1]["color"] == "green"
 
@@ -120,10 +121,10 @@ def test_multiple_losses_before_a_win_on_the_same_banner():
     # still needs its own in-progress run, and the goal is not complete.
     assert result["goal_complete"] is False
     labels = [line["label"] for line in result["lines"]]
-    assert "Weapon Run 1 (obtained 0)" in labels
-    assert "Weapon Run 2 (obtained 0)" in labels
-    assert "Weapon Run 3 (obtained 1)" in labels
-    assert "Character Run 1 (obtained 0)" in labels   # in-progress, character never mentioned
+    assert "Weapon Run 1 (obtained 0 of 1)" in labels
+    assert "Weapon Run 2 (obtained 0 of 1)" in labels
+    assert "Weapon Run 3 (obtained 1 of 1)" in labels
+    assert "Character Run 1 (obtained 0 of 1)" in labels   # in-progress, character never mentioned
     assert not any(label.startswith("Weapon Run 4") for label in labels)  # weapon goal met
 
 
@@ -227,7 +228,7 @@ def test_final_result_tooltip_targets_the_result_pill_not_the_outcome_pill():
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is True
 
-    weapon_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0)")
+    weapon_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0 of 1)")
     outcome_pill = weapon_line["pills"][-1]
     result_pill = weapon_line["pills"][-2]
     assert outcome_pill["kind"] == "outcome"
@@ -250,7 +251,7 @@ class TestUnstatedPity:
 
         assert result["ok"] is True
         assert result["total_pulls"] == 62
-        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1)")
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
         assert char_line["pills"] == [
             {"kind": "outcome", "value": "WIN", "color": "green", "tooltip": TOOLTIPS["outcome"]},
         ]
@@ -267,7 +268,7 @@ class TestUnstatedPity:
         assert result["ok"] is True
         assert result["total_pulls"] == 81
         assert result["start_char_guarantee"] is True   # a loss is a loss, known regardless of pity
-        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 0)")
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 0 of 1)")
         assert char_line["pills"][0]["value"] == "LOSS"
 
     def test_unstated_pity_without_a_direct_restatement_returns_error(self):
@@ -288,8 +289,8 @@ class TestUnstatedPity:
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         assert result["total_pulls"] == 50
-        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1)")
-        assert [p["value"] for p in char_line["pills"]] == [100, "−", 42, "+", 11, 69, "WIN"]
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
+        assert [p["value"] for p in char_line["pills"]] == [100, "−", 42, "+", 11, "=", 69, "WIN"]
 
     def test_additional_pulls_still_apply_on_top_of_stated_remaining(self):
         events = [_event(1, "character", "win", None, 0)]

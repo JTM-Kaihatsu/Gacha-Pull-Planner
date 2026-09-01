@@ -67,8 +67,8 @@ export default function ScenarioComparison({ baseline, baselineStats }) {
   }
 
   return (
-    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-      <summary className="text-sm font-medium text-slate-400 select-none">Compare Scenarios</summary>
+    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4">
+      <summary className="text-sm font-medium text-slate-400 select-none cursor-pointer">Compare Scenarios</summary>
       <div className="mt-4 space-y-5">
         <p className="text-xs text-slate-500">
           Build a what-if against your baseline result, then compare. This re-runs

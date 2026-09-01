@@ -10,17 +10,29 @@ const PILL_STYLES = {
   light_green: 'bg-emerald-900/30 border-emerald-700/50 text-emerald-300',
 }
 
+// A native `title` attribute is unreliable here: it has a ~1s dwell delay
+// before it appears, is unstyled (breaks out of the dark theme), and is
+// rendered by the OS outside the page, not something a hover state can be
+// relied on to actually surface. This is a real, instant, styled tooltip
+// instead, shown via a CSS group-hover on a wrapping span.
 function Pill({ pill }) {
   const style = PILL_STYLES[pill.color] || PILL_STYLES.default
   const isOperator = pill.kind === 'operator'
   return (
-    <span
-      title={pill.tooltip}
-      className={`inline-flex items-center text-xs font-mono rounded border leading-none ${style} ${
-        isOperator ? 'px-1.5 py-1' : 'px-2 py-1'
-      }`}
-    >
-      {pill.value}
+    <span className="relative inline-flex group">
+      <span
+        className={`inline-flex items-center text-xs font-mono rounded border leading-none ${style} ${
+          isOperator ? 'px-1.5 py-1' : 'px-2 py-1'
+        }`}
+      >
+        {pill.value}
+      </span>
+      <span
+        role="tooltip"
+        className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 w-max max-w-[220px] -translate-x-1/2 whitespace-normal rounded-md border border-slate-700 bg-slate-900 px-2 py-1.5 text-[11px] leading-snug text-slate-200 opacity-0 shadow-lg transition-opacity duration-100 group-hover:opacity-100"
+      >
+        {pill.tooltip}
+      </span>
     </span>
   )
 }

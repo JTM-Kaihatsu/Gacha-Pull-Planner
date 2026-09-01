@@ -1,7 +1,12 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { advise } from '../api'
 import { buildScenarioPayload, suggestedQuestions } from '../lib/scenarios'
 import ParsedSituation from './ParsedSituation'
+
+// Suggested questions may carry a literal [PLACEHOLDER] the user is meant
+// to replace with their own number, not an illustrative one: a concrete-
+// but-fake number would look exactly like a real answer if sent unedited.
+const PLACEHOLDER_PATTERN = /\[[^\]]+\]/
 
 const MAX_QUESTION_LENGTH = 500
 
@@ -13,7 +18,6 @@ const STATUS_MESSAGE = {
 export default function FollowUpAdvisor({ baseline, confidence }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState(null)
-  const [runs, setRuns] = useState([])
   const [breakdown, setBreakdown] = useState(null)
   const [statusMessage, setStatusMessage] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -22,13 +26,32 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   const suggestions = suggestedQuestions(confidence, baseline)
   const trimmed = question.trim()
   const canAsk = trimmed.length > 0 && !loading
+  const textareaRef = useRef(null)
+  const pendingSelectionRef = useRef(null)
+
+  function handleSuggestionClick(s) {
+    setQuestion(s)
+    const match = s.match(PLACEHOLDER_PATTERN)
+    pendingSelectionRef.current = match ? [match.index, match.index + match[0].length] : null
+  }
+
+  // Applying the selection here (after the DOM has actually picked up the
+  // new value) is reliable; guessing a frame via requestAnimationFrame in
+  // the click handler above raced React's own re-render and lost.
+  useEffect(() => {
+    const pending = pendingSelectionRef.current
+    const el = textareaRef.current
+    if (!pending || !el) return
+    el.focus()
+    el.setSelectionRange(pending[0], pending[1])
+    pendingSelectionRef.current = null
+  }, [question])
 
   async function handleAsk() {
     if (!canAsk) return
     setLoading(true)
     setError(null)
     setAnswer(null)
-    setRuns([])
     setBreakdown(null)
     setStatusMessage(null)
     try {
@@ -36,7 +59,6 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
       const data = await advise(payload)
       if (data.status === 'ok' && data.answer) {
         setAnswer(data.answer)
-        setRuns(data.runs || [])
         setBreakdown(data.breakdown || null)
       } else {
         setStatusMessage(STATUS_MESSAGE[data.status] || STATUS_MESSAGE.unavailable)
@@ -49,8 +71,8 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   }
 
   return (
-    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-      <summary className="text-sm font-medium text-slate-400 select-none">Ask a Follow-up (AI)</summary>
+    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4">
+      <summary className="text-sm font-medium text-slate-400 select-none cursor-pointer">Ask a Follow-up (AI)</summary>
       <div className="mt-4 space-y-3">
         <p className="text-xs text-slate-500">
           Ask an open-ended what-if the presets do not cover. The AI re-runs the
@@ -64,7 +86,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
               <button
                 key={i}
                 type="button"
-                onClick={() => setQuestion(s)}
+                onClick={() => handleSuggestionClick(s)}
                 className="text-xs text-left px-3 py-1.5 rounded-lg border bg-slate-800 border-slate-700 text-slate-300 hover:border-violet-500 transition-colors"
               >
                 {s}
@@ -74,6 +96,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         </div>
 
         <textarea
+          ref={textareaRef}
           value={question}
           onChange={e => setQuestion(e.target.value.slice(0, MAX_QUESTION_LENGTH))}
           placeholder="Ask your own, or click a suggestion above to start."
@@ -98,20 +121,11 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         {answer && (
           <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
             <div className="text-xs text-violet-400 uppercase tracking-wider mb-2">Advisor</div>
+            {/* Every simulation the advisor ran (the guaranteed pre-run and any
+                further exploration) is already represented inside breakdown.lines
+                as its own labeled pill line ("Simulated Result" / "Agent Run
+                Cycle N"), so there is no separate receipt-chip list here. */}
             <ParsedSituation breakdown={breakdown} />
-            {runs.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-3">
-                {runs.map((r, i) => (
-                  <span
-                    key={i}
-                    className="text-xs font-mono bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-400"
-                    title="A simulation the advisor ran to answer"
-                  >
-                    {r.total_pulls} pulls, {r.desired_characters}C/{r.desired_weapons}W {'→'} {r.success_rate}
-                  </span>
-                ))}
-              </div>
-            )}
             <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{answer}</p>
           </div>
         )}

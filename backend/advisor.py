@@ -17,13 +17,21 @@ from openai import OpenAI
 
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
-from session_state import build_result_line, reconcile
+from session_state import build_agent_cycle_line, build_result_line, reconcile
 from simulation import run_simulation_verbose
 
 # Fewer trials than the main endpoint: the advisor may run several sims per
 # question, and it only needs directional numbers, not publication precision.
 ADVISOR_TRIALS = 4000
 MAX_TOOL_CALLS = 4
+
+# Every call in this module was left at the API default (1.0, its max) until
+# a live-testing session caught the model citing a percentage in prose with
+# no corresponding tool call behind it. A low, consistent temperature across
+# every call here (extraction and interpretation alike) makes that kind of
+# unprompted embellishment meaningfully less likely, in keeping with this
+# module's whole "grounded, not creative" mandate.
+ADVISOR_TEMPERATURE = 0.2
 
 # Hardcoded, not an LLM call: when an event sequence can't be reconciled even
 # after one corrective retry, decline plainly rather than guess. This is
@@ -205,9 +213,16 @@ def _validate_strategy(strategy):
     return None
 
 
-def _run_tool(args, baseline_params):
+def _run_tool(args, baseline_params, lock_start_state=False):
     """Execute the run_simulation tool: merge the model's args over the baseline,
-    validate, run, and return a condensed result (or an error the model can read)."""
+    validate, run, and return a condensed result (or an error the model can read).
+
+    lock_start_state=True is used once a session's real pity/guarantee state
+    has been verified by reconciliation: the model may still explore a
+    different total_pulls or copy count, but cannot override the actual
+    pity/guarantee it was just given, no matter what it passes. Prompt-only
+    instructions to the same effect were repeatedly not followed reliably;
+    this makes it structurally impossible instead of asking nicely."""
     strategy = args.get("strategy") or baseline_params["strategy"]
     error = _validate_strategy(strategy)
     if error:
@@ -217,13 +232,24 @@ def _run_tool(args, baseline_params):
     if not isinstance(total_pulls, int) or total_pulls < 1:
         return {"error": "total_pulls must be an integer >= 1"}
 
+    if lock_start_state:
+        start_char_pity = baseline_params["start_char_pity"]
+        start_char_guarantee = baseline_params["start_char_guarantee"]
+        start_weapon_pity = baseline_params["start_weapon_pity"]
+        start_weapon_guarantee = baseline_params["start_weapon_guarantee"]
+    else:
+        start_char_pity = args.get("start_char_pity", baseline_params["start_char_pity"])
+        start_char_guarantee = args.get("start_char_guarantee", baseline_params["start_char_guarantee"])
+        start_weapon_pity = args.get("start_weapon_pity", baseline_params["start_weapon_pity"])
+        start_weapon_guarantee = args.get("start_weapon_guarantee", baseline_params["start_weapon_guarantee"])
+
     stats = run_simulation_verbose(
         total_pulls=total_pulls,
         strategy=[{"banner": p["banner"], "copies": p["copies"]} for p in strategy],
-        start_char_pity=args.get("start_char_pity", baseline_params["start_char_pity"]),
-        start_char_guarantee=args.get("start_char_guarantee", baseline_params["start_char_guarantee"]),
-        start_weapon_pity=args.get("start_weapon_pity", baseline_params["start_weapon_pity"]),
-        start_weapon_guarantee=args.get("start_weapon_guarantee", baseline_params["start_weapon_guarantee"]),
+        start_char_pity=start_char_pity,
+        start_char_guarantee=start_char_guarantee,
+        start_weapon_pity=start_weapon_pity,
+        start_weapon_guarantee=start_weapon_guarantee,
         full_4star_chars=baseline_params["full_4star_chars"],
         char_pity_config=baseline_params["char_pity_config"],
         weapon_pity_config=baseline_params["weapon_pity_config"],
@@ -257,6 +283,7 @@ def _extract_session_state(client, model, question, baseline_stats, error_feedba
             "type": "json_schema",
             "json_schema": {"name": "session_state", "strict": True, "schema": SESSION_STATE_SCHEMA},
         },
+        temperature=ADVISOR_TEMPERATURE,
     )
     try:
         return json.loads(response.choices[0].message.content or "{}")
@@ -296,7 +323,11 @@ SYSTEM_PROMPT = (
     "weapon pity are independent of each other. Never assume a previous pity count "
     "carries forward into a new phase after a 5-star was already obtained on that "
     "banner, and never present that as an open question or a second, higher-odds "
-    "scenario: it is not a matter of interpretation. "
+    "scenario: it is not a matter of interpretation. Never state a pull count, a "
+    "success rate, or any other simulation-derived number in your answer unless it "
+    "came directly from a run_simulation result you actually received in this "
+    "conversation; if a further scenario is worth mentioning, call the tool for it "
+    "first, do not estimate or reason your way to a plausible-sounding figure. "
     "No markdown, no headers, no bullet points, no em-dashes."
 )
 
@@ -355,6 +386,12 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     run_params = baseline_params
     breakdown = None
     runs = []
+    agent_cycle = 0
+    # Locked once a session's real pity/guarantee has been reconciled and
+    # verified: exploratory calls beyond that point may still vary
+    # total_pulls or copies, but cannot override the actual starting state,
+    # regardless of what the model passes. See _run_tool.
+    lock_start_state = False
 
     reconciled = _reconcile_session_state(client, model, question, baseline_params, baseline_stats)
     if reconciled.get("applies") and reconciled.get("ok"):
@@ -373,7 +410,9 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user", "content": f"{context}\n\nFollow-up question: {question}"},
             ]
-            response = client.chat.completions.create(model=model, messages=messages, tool_choice="none")
+            response = client.chat.completions.create(
+                model=model, messages=messages, tool_choice="none", temperature=ADVISOR_TEMPERATURE,
+            )
             return (response.choices[0].message.content or "").strip(), [], breakdown
 
         run_params = {
@@ -385,6 +424,7 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             "start_weapon_pity": reconciled["start_weapon_pity"],
             "start_weapon_guarantee": reconciled["start_weapon_guarantee"],
         }
+        lock_start_state = True
 
         # Run the reconciled scenario ourselves, right now, rather than
         # trusting the model to call the tool with the correct parameters.
@@ -403,11 +443,16 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
             f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
             f"most common failure state {primary_result['most_common_failure_state']}. Use this "
-            f"as your primary answer; cite these exact numbers. Only call run_simulation again "
-            f"if the question explicitly asks about a further, different scenario, and if so "
-            f"derive any different total_pulls only by adding to or subtracting from the "
-            f"{run_params['total_pulls']} figure above, never by recomputing it from the raw "
-            f"figures in the question yourself."
+            f"as your primary answer; cite these exact numbers. Never state a total_pulls figure "
+            f"or a success rate in your answer that you did not get back from an actual "
+            f"run_simulation call; if you want to mention a further scenario, call the tool for "
+            f"it first. Only call run_simulation again if the question explicitly asks about a "
+            f"further, different scenario, and if so derive any different total_pulls only by "
+            f"adding to or subtracting from the {run_params['total_pulls']} figure above, never "
+            f"by recomputing it from the raw figures in the question yourself. Any "
+            f"start_char_pity, start_char_guarantee, start_weapon_pity, or start_weapon_guarantee "
+            f"you pass on such a call is ignored: the verified state above is used regardless, "
+            f"so do not bother varying those."
         )
     elif reconciled.get("applies"):
         # The question described an event sequence, but it could not be
@@ -427,6 +472,7 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     for _ in range(max_tool_calls):
         response = client.chat.completions.create(
             model=model, messages=messages, tools=[RUN_SIMULATION_TOOL], tool_choice="auto",
+            temperature=ADVISOR_TEMPERATURE,
         )
         msg = response.choices[0].message
         if not msg.tool_calls:
@@ -438,9 +484,19 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
                 args = json.loads(tool_call.function.arguments or "{}")
             except json.JSONDecodeError:
                 args = {}
-            result = _run_tool(args, run_params)
+            result = _run_tool(args, run_params, lock_start_state=lock_start_state)
             if "error" not in result:
                 runs.append(result)
+                # Every tool call reaching this loop is, by definition, the
+                # model exploring beyond the guaranteed pre-run (which never
+                # goes through here), surface it as its own labeled pill so
+                # any such exploration is explicit and tracked, not just a
+                # claim in prose.
+                agent_cycle += 1
+                cycle_line = build_agent_cycle_line(agent_cycle, result["total_pulls"], result["success_rate"])
+                if breakdown is None:
+                    breakdown = {"status": "ok", "lines": []}
+                breakdown["lines"].append(cycle_line)
             messages.append({
                 "role": "tool",
                 "tool_call_id": tool_call.id,
@@ -449,6 +505,6 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
 
     # Tool-call budget exhausted: force a final text answer with what we have.
     response = client.chat.completions.create(
-        model=model, messages=messages, tool_choice="none",
+        model=model, messages=messages, tool_choice="none", temperature=ADVISOR_TEMPERATURE,
     )
     return (response.choices[0].message.content or "").strip(), runs, breakdown

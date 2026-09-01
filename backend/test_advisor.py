@@ -117,7 +117,14 @@ def test_runs_tool_then_answers(monkeypatch):
     answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "what if I had 160 pulls?")
 
     assert answer == "With 160 pulls you're at 80%."
-    assert breakdown is None
+    # A pure hypothetical starts with no breakdown, but any tool call the
+    # model actually makes is still surfaced as its own tracked pill line,
+    # not just a claim in the prose.
+    assert breakdown == {"status": "ok", "lines": [
+        {"label": "Agent Run Cycle 1",
+         "pills": [{"kind": "result", "value": "160 pulls → 80.00%", "color": "light_green",
+                    "tooltip": "An additional scenario the AI chose to explore with a real simulation, beyond the primary answer above"}]},
+    ]}
     assert len(fake.calls) == 3
     # The third request carried the tool result back to the model.
     roles = [m["role"] for m in fake.calls[2]["messages"]]
@@ -175,7 +182,11 @@ def test_tool_call_budget_is_capped(monkeypatch):
 
     answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "keep testing", max_tool_calls=3)
     assert answer == "Final forced answer."
-    assert breakdown is None
+    assert breakdown["status"] == "ok"
+    # Each of the 3 tool loops is its own tracked Agent Run Cycle line.
+    assert [l["label"] for l in breakdown["lines"]] == [
+        "Agent Run Cycle 1", "Agent Run Cycle 2", "Agent Run Cycle 3",
+    ]
     assert len(fake.calls) == 5                       # extraction + 3 tool loops + 1 forced final
     assert fake.calls[-1]["tool_choice"] == "none"    # final call forbids more tools
     assert len(runs) == 3                             # each loop ran the tool once
@@ -221,8 +232,8 @@ class TestSessionStateIntegration:
         )
 
         assert breakdown["status"] == "ok"
-        char_run = _find_line(breakdown, "Character Run 1 (obtained 1)")
-        assert [p["value"] for p in char_run["pills"]] == [100, "−", 42, "+", 11, 69, "WIN"]
+        char_run = _find_line(breakdown, "Character Run 1 (obtained 1 of 1)")
+        assert [p["value"] for p in char_run["pills"]] == [100, "−", 42, "+", 11, "=", 69, "WIN"]
         # The actual simulation ran on just the weapon, from scratch, guaranteed,
         # with pulls netted of refunds, not the naive gross subtraction.
         assert seen_kwargs["strategy"] == [{"banner": "weapon", "copies": 1}]
@@ -387,11 +398,77 @@ class TestSessionStateIntegration:
         )
 
         assert breakdown["status"] == "ok"
-        assert _find_line(breakdown, "Weapon Run 1 (obtained 0)")
-        assert _find_line(breakdown, "Weapon Run 2 (obtained 0)")
-        assert _find_line(breakdown, "Weapon Run 3 (obtained 1)")
-        assert _find_line(breakdown, "Character Run 1 (obtained 0)")  # in progress, never mentioned
+        assert _find_line(breakdown, "Weapon Run 1 (obtained 0 of 1)")
+        assert _find_line(breakdown, "Weapon Run 2 (obtained 0 of 1)")
+        assert _find_line(breakdown, "Weapon Run 3 (obtained 1 of 1)")
+        assert _find_line(breakdown, "Character Run 1 (obtained 0 of 1)")  # in progress, never mentioned
         assert answer == "You got there on the third try."
+
+    def test_exploratory_call_on_reconciled_scenario_is_locked_and_tracked(self, monkeypatch):
+        # Live-testing turned up two related bugs on top of the reconciled
+        # scenario: the model citing a percentage with no tool call behind
+        # it at all, and (when it does call the tool) inventing an
+        # unrequested pity override. This exercises the fix for both: the
+        # exploratory call's invented start_weapon_pity is ignored, and the
+        # call itself becomes its own tracked "Agent Run Cycle" pill line
+        # appended after the guaranteed "Simulated Result" line.
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        events = [_event(1, "character", "win", 42, 11), _event(2, "weapon", "loss", 31, 3)]
+        # The model explores a further scenario but also fabricates a pity
+        # override nobody asked for.
+        tc = _tool_call("c2", "run_simulation", json.dumps(
+            {"total_pulls": 103, "start_weapon_pity": 53, "start_weapon_guarantee": False},
+        ))
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content=None, tool_calls=[tc])),
+            _response(_msg(content="Even exploring further, the odds stay similar.")),
+        ])
+        seen_kwargs_per_call = []
+
+        def _spy_sim(**kwargs):
+            seen_kwargs_per_call.append(kwargs)
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "I got the character at 42 pity with 11 refunds, then used 31 pulls on the "
+            "weapon with 3 refunds and lost the 50/50. What if I kept going a while longer?",
+        )
+
+        # Two simulations ran: the guaranteed pre-run, then the exploratory
+        # one, with its invented pity/guarantee ignored (locked).
+        assert len(seen_kwargs_per_call) == 2
+        exploratory_kwargs = seen_kwargs_per_call[1]
+        assert exploratory_kwargs["start_weapon_pity"] == 0            # not the model's invented 53
+        assert exploratory_kwargs["start_weapon_guarantee"] is True    # the real, verified guarantee
+        assert exploratory_kwargs["total_pulls"] == 103                # total_pulls itself is still respected
+
+        labels = [line["label"] for line in breakdown["lines"]]
+        assert "Simulated Result" in labels
+        assert "Agent Run Cycle 1" in labels
+        assert labels.index("Agent Run Cycle 1") > labels.index("Simulated Result")
+        assert answer == "Even exploring further, the odds stay similar."
+
+    def test_every_call_uses_the_low_advisor_temperature(self, monkeypatch):
+        events = [_event(1, "character", "win", 42, 11)]
+        fake = _FakeClient([
+            _extraction_response(events=events, pulls_remaining_stated=50),
+            _response(_msg(content="Grounded answer.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        run_advisor(BASELINE_PARAMS, BASELINE_STATS, "some question")
+
+        assert len(fake.calls) == 2
+        for call in fake.calls:
+            assert call["temperature"] == advisor.ADVISOR_TEMPERATURE
 
 
 class TestToolExecutor:
@@ -408,6 +485,36 @@ class TestToolExecutor:
     def test_invalid_total_pulls_returns_error(self):
         result = _run_tool({"total_pulls": 0}, BASELINE_PARAMS)
         assert "error" in result
+
+    def test_lock_start_state_ignores_model_supplied_pity_and_guarantee(self, monkeypatch):
+        seen_kwargs = {}
+
+        def _spy_sim(**kwargs):
+            seen_kwargs.update(kwargs)
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+        _run_tool(
+            {"total_pulls": 103, "start_weapon_pity": 53, "start_weapon_guarantee": False},
+            BASELINE_PARAMS, lock_start_state=True,
+        )
+        # The model's invented pity/guarantee are ignored entirely; the
+        # verified baseline values are used regardless of what was passed.
+        assert seen_kwargs["start_weapon_pity"] == BASELINE_PARAMS["start_weapon_pity"]
+        assert seen_kwargs["start_weapon_guarantee"] == BASELINE_PARAMS["start_weapon_guarantee"]
+        # total_pulls is still respected: only pity/guarantee are locked.
+        assert seen_kwargs["total_pulls"] == 103
+
+    def test_without_lock_start_state_overrides_are_respected(self, monkeypatch):
+        seen_kwargs = {}
+
+        def _spy_sim(**kwargs):
+            seen_kwargs.update(kwargs)
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+        _run_tool({"start_weapon_pity": 53}, BASELINE_PARAMS, lock_start_state=False)
+        assert seen_kwargs["start_weapon_pity"] == 53
 
 
 class TestValidateStrategy:
