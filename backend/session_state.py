@@ -33,6 +33,7 @@ TOOLTIPS = {
     "outcome": "Whether this run resulted in a win or a loss",
     "goal": "The character and weapon copies being planned for, based on the original goal and anything added or already obtained",
     "simulated": "The actual simulated success rate using the pulls and goal above",
+    "agent_cycle": "An additional scenario the AI chose to explore with a real simulation, beyond the primary answer above",
     "status": "The current state of your goal after the events above",
     "stated_remaining": "Pulls remaining as directly stated in your question, since not every event gave an exact pity count",
 }
@@ -378,4 +379,16 @@ def build_result_line(total_pulls, success_rate):
     return {
         "label": "Simulated Result",
         "pills": [_pill("result", f"{total_pulls} pulls → {success_rate}", "light_green", "simulated")],
+    }
+
+
+def build_agent_cycle_line(cycle_number, total_pulls, success_rate):
+    """A further scenario the advisor's own agentic loop chose to explore
+    beyond the guaranteed pre-run, appended once advisor.py has actually run
+    it. Kept visually distinct (its own labeled line) from the pre-run's
+    "Simulated Result" so any such exploration is explicit and attributable,
+    not just a claim folded into the prose answer."""
+    return {
+        "label": f"Agent Run Cycle {cycle_number}",
+        "pills": [_pill("result", f"{total_pulls} pulls → {success_rate}", "light_green", "agent_cycle")],
     }

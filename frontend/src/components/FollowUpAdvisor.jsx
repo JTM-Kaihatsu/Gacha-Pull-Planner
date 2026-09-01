@@ -18,7 +18,6 @@ const STATUS_MESSAGE = {
 export default function FollowUpAdvisor({ baseline, confidence }) {
   const [question, setQuestion] = useState('')
   const [answer, setAnswer] = useState(null)
-  const [runs, setRuns] = useState([])
   const [breakdown, setBreakdown] = useState(null)
   const [statusMessage, setStatusMessage] = useState(null)
   const [loading, setLoading] = useState(false)
@@ -53,7 +52,6 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
     setLoading(true)
     setError(null)
     setAnswer(null)
-    setRuns([])
     setBreakdown(null)
     setStatusMessage(null)
     try {
@@ -61,7 +59,6 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
       const data = await advise(payload)
       if (data.status === 'ok' && data.answer) {
         setAnswer(data.answer)
-        setRuns(data.runs || [])
         setBreakdown(data.breakdown || null)
       } else {
         setStatusMessage(STATUS_MESSAGE[data.status] || STATUS_MESSAGE.unavailable)
@@ -124,20 +121,11 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         {answer && (
           <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
             <div className="text-xs text-violet-400 uppercase tracking-wider mb-2">Advisor</div>
+            {/* Every simulation the advisor ran (the guaranteed pre-run and any
+                further exploration) is already represented inside breakdown.lines
+                as its own labeled pill line ("Simulated Result" / "Agent Run
+                Cycle N"), so there is no separate receipt-chip list here. */}
             <ParsedSituation breakdown={breakdown} />
-            {runs.length > 0 && (
-              <div className="flex flex-wrap gap-2 mb-3">
-                {runs.map((r, i) => (
-                  <span
-                    key={i}
-                    className="text-xs font-mono bg-slate-800 border border-slate-700 rounded px-2 py-1 text-slate-400"
-                    title="A simulation the advisor ran to answer"
-                  >
-                    {r.total_pulls} pulls, {r.desired_characters}C/{r.desired_weapons}W {'→'} {r.success_rate}
-                  </span>
-                ))}
-              </div>
-            )}
             <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{answer}</p>
           </div>
         )}
