@@ -234,3 +234,66 @@ def test_final_result_tooltip_targets_the_result_pill_not_the_outcome_pill():
     assert outcome_pill["tooltip"] == TOOLTIPS["outcome"]
     assert result_pill["kind"] == "result"
     assert result_pill["tooltip"] == TOOLTIPS["final_result"]
+
+
+class TestUnstatedPity:
+    """Users often describe an outcome without an exact pity/pull count,
+    e.g. "I won with 62 to spare" or "I lost, and I have 81 left". These
+    events carry pity_at_outcome=None; pulls_remaining_stated becomes the
+    only valid source of truth for the current total in that case."""
+
+    def test_single_win_with_pulls_to_spare_instead_of_pity(self):
+        # "I won the character 50/50 with 62 pulls to spare"
+        events = [_event(1, "character", "win", None, 0)]
+        extracted = _blank(events=events, pulls_remaining_stated=62)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+
+        assert result["ok"] is True
+        assert result["total_pulls"] == 62
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1)")
+        assert char_line["pills"] == [
+            {"kind": "outcome", "value": "WIN", "color": "green", "tooltip": TOOLTIPS["outcome"]},
+        ]
+        stated_line = next(l for l in result["lines"] if l["label"] == "Stated Pulls Remaining")
+        assert stated_line["pills"][0]["value"] == 62
+        assert stated_line["pills"][0]["tooltip"] == TOOLTIPS["final_result"]  # overwritten, it's the final figure
+
+    def test_loss_with_pulls_left_instead_of_pity(self):
+        # "I lost the first run at the character banner and I have 81 pulls left"
+        events = [_event(1, "character", "loss", None, 0)]
+        extracted = _blank(events=events, pulls_remaining_stated=81)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+
+        assert result["ok"] is True
+        assert result["total_pulls"] == 81
+        assert result["start_char_guarantee"] is True   # a loss is a loss, known regardless of pity
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 0)")
+        assert char_line["pills"][0]["value"] == "LOSS"
+
+    def test_unstated_pity_without_a_direct_restatement_returns_error(self):
+        events = [_event(1, "character", "win", None, 0)]
+        result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is False
+        assert "pulls_remaining_stated" in result["error"]
+
+    def test_mixed_known_and_unknown_pity_events(self):
+        # One event with full numbers, one without: the known event still
+        # contributes to the ledger for context, but the final total comes
+        # from the direct restatement, not from partially-summed math.
+        events = [
+            _event(1, "character", "win", 42, 11),
+            _event(2, "weapon", "loss", None, 0),
+        ]
+        extracted = _blank(events=events, pulls_remaining_stated=50)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        assert result["total_pulls"] == 50
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1)")
+        assert [p["value"] for p in char_line["pills"]] == [100, "−", 42, "+", 11, 69, "WIN"]
+
+    def test_additional_pulls_still_apply_on_top_of_stated_remaining(self):
+        events = [_event(1, "character", "win", None, 0)]
+        extracted = _blank(events=events, pulls_remaining_stated=62, additional_pulls_stated=20)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        assert result["total_pulls"] == 82

@@ -47,8 +47,8 @@ EVENT_SCHEMA = {
         "banner_type": {"type": "string", "enum": ["character", "weapon"]},
         "outcome": {"type": "string", "enum": ["win", "loss"]},
         "pity_at_outcome": {
-            "type": "integer",
-            "description": "Raw pulls spent on this banner to reach this outcome (the pity count).",
+            "type": ["integer", "null"],
+            "description": "Raw pulls spent on this banner to reach this outcome (the pity count). Null if the question did not give an exact pity/pull count for this specific event (e.g. 'I won with 62 to spare', 'I lost, and I have 81 pulls left'); in that case report pulls_remaining_stated instead so the true total can still be known.",
         },
         "refund_count": {
             "type": "integer",
@@ -112,16 +112,23 @@ EXTRACTION_SYSTEM_PROMPT = (
     "You extract a sequence of discrete pull events from a gacha follow-up question. Do "
     "not do any math, do not aggregate multiple events into one, and do not decide a "
     "strategy. If the question describes one or more actual pulls that already "
-    "happened (a banner pulled to a win or a loss, with a pity count), report each one "
-    "as its own event: which banner, win or loss, the pity count at that outcome, and "
-    "any 4-star refund received (0 if none stated). Number events sequentially "
-    "starting from 1 in the order they occurred; never combine two events into one or "
-    "sum their numbers together. If the question is a pure hypothetical or strategy "
-    "question with no actual event history, set has_event_sequence to false and events "
-    "to an empty list. Also report, only if explicitly stated: a direct restatement of "
-    "pulls remaining (pulls_remaining_stated), an amount to add on top of whatever "
-    "remains, not a total (additional_pulls_stated), a restated total pull budget "
-    "(total_pulls_restated), and any extra copies wanted beyond the original goal "
+    "happened (a banner pulled to a win or a loss), report each one as its own event: "
+    "which banner, win or loss, and (if an exact number was given) the pity count at "
+    "that outcome and any 4-star refund received (0 if none stated). Number events "
+    "sequentially starting from 1 in the order they occurred; never combine two events "
+    "into one or sum their numbers together. Users often describe an outcome without "
+    "giving its exact pity, instead stating how many pulls they have left afterward, "
+    "for example 'I won the character with 62 pulls to spare', 'I lost my first run at "
+    "the character banner and I have 81 pulls left'. In that case still report the "
+    "event (banner and win/loss), leave pity_at_outcome null for it, and put the stated "
+    "figure in pulls_remaining_stated instead of trying to work out what the pity must "
+    "have been. If the question is a pure hypothetical or strategy question with no "
+    "actual event history, set has_event_sequence to false and events to an empty "
+    "list. Also report, only if explicitly stated: a direct restatement of pulls "
+    "remaining (pulls_remaining_stated, required whenever any event's pity is null), "
+    "an amount to add on top of whatever remains, not a total "
+    "(additional_pulls_stated), a restated total pull budget (total_pulls_restated), "
+    "and any extra copies wanted beyond the original goal "
     "(additional_character_copies_wanted / additional_weapon_copies_wanted). Leave a "
     "field null if the question does not state it."
 )

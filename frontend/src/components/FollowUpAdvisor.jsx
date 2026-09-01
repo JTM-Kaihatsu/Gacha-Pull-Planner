@@ -19,7 +19,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const suggestions = suggestedQuestions(confidence)
+  const suggestions = suggestedQuestions(confidence, baseline)
   const trimmed = question.trim()
   const canAsk = trimmed.length > 0 && !loading
 

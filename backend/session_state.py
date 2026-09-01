@@ -33,6 +33,7 @@ TOOLTIPS = {
     "goal": "The character and weapon copies being planned for, based on the original goal and anything added or already obtained",
     "simulated": "The actual simulated success rate using the pulls and goal above",
     "status": "The current state of your goal after the events above",
+    "stated_remaining": "Pulls remaining as directly stated in your question, since not every event gave an exact pity count",
 }
 
 _BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
@@ -61,11 +62,16 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
         hard_pity = (char_pity_config if event["banner_type"] == "character" else weapon_pity_config)["hard_pity"]
         pity = event.get("pity_at_outcome")
         refunds = event.get("refund_count")
-        if not isinstance(pity, int) or not (0 <= pity <= hard_pity):
+        # pity_at_outcome may be null: the question described an outcome
+        # without giving its exact pull count (e.g. "I won with 62 to
+        # spare", "I lost, and I have 81 pulls left"). That event still
+        # updates obtained counts and guarantees; it just can't contribute
+        # to the pulls ledger, so pulls_remaining_stated becomes required.
+        if pity is not None and (not isinstance(pity, int) or not (0 <= pity <= hard_pity)):
             return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
         if not isinstance(refunds, int) or refunds < 0:
             return f"event_order {event['event_order']}: refund_count ({refunds}) cannot be negative"
-        if refunds > pity:
+        if pity is not None and refunds > pity:
             return f"event_order {event['event_order']}: refund_count ({refunds}) exceeds pity_at_outcome ({pity})"
     return None
 
@@ -74,11 +80,12 @@ def _process_events(events, running_pulls):
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
     weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
-    running_pulls, error)."""
+    running_pulls, any_unknown_pity, error)."""
     counts = {"character": 0, "weapon": 0}
     guarantees = {"character": False, "weapon": False}
     run_index = {"character": 0, "weapon": 0}
     lines = []
+    any_unknown_pity = False
 
     for event in events:
         banner = event["banner_type"]
@@ -87,9 +94,6 @@ def _process_events(events, running_pulls):
         refunds = event["refund_count"]
 
         run_index[banner] += 1
-        start_pulls = running_pulls
-        running_pulls -= pity
-        running_pulls += refunds
 
         if outcome == "win":
             counts[banner] += 1
@@ -97,9 +101,27 @@ def _process_events(events, running_pulls):
         else:
             guarantees[banner] = True
 
+        if pity is None:
+            # No exact pity given for this event: it still updates the
+            # obtained count and guarantee above, but can't touch the pulls
+            # ledger. The caller must fall back to a direct restatement.
+            any_unknown_pity = True
+            lines.append({
+                "label": f"{_BANNER_LABEL[banner]} Run {run_index[banner]} (obtained {counts[banner]})",
+                "pills": [
+                    _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),
+                ],
+            })
+            continue
+
+        start_pulls = running_pulls
+        running_pulls -= pity
+        running_pulls += refunds
+
         if running_pulls < 0:
             return (lines, counts["character"], counts["weapon"], guarantees["character"],
                     guarantees["weapon"], run_index["character"], run_index["weapon"], running_pulls,
+                    any_unknown_pity,
                     f"event_order {event['event_order']}: pulls consumed exceed the stated total budget")
 
         lines.append({
@@ -116,7 +138,7 @@ def _process_events(events, running_pulls):
         })
 
     return (lines, counts["character"], counts["weapon"], guarantees["character"], guarantees["weapon"],
-            run_index["character"], run_index["weapon"], running_pulls, None)
+            run_index["character"], run_index["weapon"], running_pulls, any_unknown_pity, None)
 
 
 def reconcile(extracted, baseline_params, baseline_stats):
@@ -162,25 +184,49 @@ def reconcile(extracted, baseline_params, baseline_stats):
     total_pulls_budget = extracted.get("total_pulls_restated") or baseline_params["total_pulls"]
 
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
-     char_events, weapon_events, running_pulls, error) = _process_events(events, total_pulls_budget)
+     char_events, weapon_events, running_pulls, any_unknown_pity,
+     error) = _process_events(events, total_pulls_budget)
     if error:
         return {"applies": True, "ok": False, "error": error}
 
     lines = list(event_lines)
-
-    # Deterministic conservation check: total consumed across every event,
-    # plus whatever remains, must equal the stated starting budget. This is
-    # exactly what the event walk above already enforces arithmetically;
-    # cross-check it against a direct restatement if the question gave one.
     stated = extracted.get("pulls_remaining_stated")
-    pre_addition_remaining = running_pulls
-    if stated is not None and stated != pre_addition_remaining + additional_pulls:
-        return {"applies": True, "ok": False, "error": (
-            f"pulls_remaining_stated ({stated}) does not reconcile with the events: "
-            f"{total_pulls_budget} starting pulls, {total_pulls_budget - pre_addition_remaining} net "
-            f"consumed across {len(events)} event(s), leaving {pre_addition_remaining}, "
-            f"plus additional_pulls_stated ({additional_pulls}) = {pre_addition_remaining + additional_pulls}"
-        )}
+
+    if any_unknown_pity:
+        # At least one event didn't state its exact pity, so the ledger
+        # above is known-incomplete: it can't be trusted as "total consumed"
+        # and there's nothing valid to cross-check. A direct restatement of
+        # pulls remaining is the only way to know the true figure here.
+        if stated is None:
+            return {"applies": True, "ok": False, "error": (
+                "at least one event did not state its exact pity, so pulls_remaining_stated "
+                "must be given directly"
+            )}
+        pre_addition_remaining = stated
+        lines.append({
+            "label": "Stated Pulls Remaining",
+            "pills": [_pill("result", stated, "light_green", "stated_remaining")],
+        })
+    else:
+        # Deterministic conservation check: total consumed across every
+        # event, plus whatever remains, must equal the stated starting
+        # budget. This is exactly what the event walk above already
+        # enforces arithmetically; cross-check it against a direct
+        # restatement if the question also gave one.
+        pre_addition_remaining = running_pulls
+        if stated is not None and stated != pre_addition_remaining + additional_pulls:
+            return {"applies": True, "ok": False, "error": (
+                f"pulls_remaining_stated ({stated}) does not reconcile with the events: "
+                f"{total_pulls_budget} starting pulls, {total_pulls_budget - pre_addition_remaining} net "
+                f"consumed across {len(events)} event(s), leaving {pre_addition_remaining}, "
+                f"plus additional_pulls_stated ({additional_pulls}) = {pre_addition_remaining + additional_pulls}"
+            )}
+
+    # pre_addition_remaining is authoritative from here on (it's either the
+    # computed ledger total, or the direct restatement when any event's
+    # pity was unknown); running_pulls must track it exactly even when
+    # there's no additional-pulls line to reassign it below.
+    running_pulls = pre_addition_remaining
 
     if additional_pulls:
         post_addition = pre_addition_remaining + additional_pulls
