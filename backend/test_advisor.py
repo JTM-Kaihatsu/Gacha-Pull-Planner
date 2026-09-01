@@ -5,7 +5,7 @@ import types
 import pytest
 
 import advisor
-from advisor import run_advisor, _run_tool, _validate_strategy
+from advisor import run_advisor, _run_tool, _validate_strategy, PARSE_FAILURE_MESSAGE
 
 
 # --- fake OpenAI client that replays a queued list of responses -------------
@@ -56,13 +56,14 @@ BASELINE_STATS = {
 }
 
 
-def _no_session_context():
+def _event(order, banner, outcome, pity, refunds):
+    return {"event_order": order, "banner_type": banner, "outcome": outcome,
+            "pity_at_outcome": pity, "refund_count": refunds}
+
+
+def _no_sequence():
     return json.dumps({
-        "has_session_context": False,
-        "character_obtained": None, "character_pulls_spent": None, "character_refunds": None,
-        "character_guarantee_active": None,
-        "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
-        "weapon_guarantee_active": None,
+        "has_event_sequence": False, "events": [],
         "pulls_remaining_stated": None, "additional_pulls_stated": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
@@ -71,11 +72,7 @@ def _no_session_context():
 
 def _extraction_response(**overrides):
     payload = {
-        "has_session_context": True,
-        "character_obtained": None, "character_pulls_spent": None, "character_refunds": None,
-        "character_guarantee_active": None,
-        "weapon_obtained": None, "weapon_pulls_spent": None, "weapon_refunds": None,
-        "weapon_guarantee_active": None,
+        "has_event_sequence": True, "events": [],
         "pulls_remaining_stated": None, "additional_pulls_stated": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
@@ -102,11 +99,15 @@ def _fake_sim(**kwargs):
     }
 
 
+def _find_line(breakdown, label):
+    return next(line for line in breakdown["lines"] if line["label"] == label)
+
+
 def test_runs_tool_then_answers(monkeypatch):
     tc = _tool_call("call_1", "run_simulation",
                     json.dumps({"total_pulls": 160, "strategy": BASELINE_PARAMS["strategy"]}))
     fake = _FakeClient([
-        _response(_msg(content=_no_session_context())),          # extraction: pure hypothetical
+        _response(_msg(content=_no_sequence())),                 # extraction: pure hypothetical
         _response(_msg(content=None, tool_calls=[tc])),          # model asks to run the sim
         _response(_msg(content="With 160 pulls you're at 80%.")),  # model answers
     ])
@@ -127,9 +128,28 @@ def test_runs_tool_then_answers(monkeypatch):
     assert runs[0]["success_rate"] == "80.00%"
 
 
+def test_pure_strategy_question_has_no_event_sequence(monkeypatch):
+    # "assuming my budget is fixed, how should I adjust my strategy" has no
+    # actual pull history in it at all, this must still work exactly like
+    # any other pure hypothetical, no event-sequence machinery engaged.
+    fake = _FakeClient([
+        _response(_msg(content=_no_sequence())),
+        _response(_msg(content="Prioritize the character copy first.")),
+    ])
+    monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+    answer, runs, breakdown = run_advisor(
+        BASELINE_PARAMS, BASELINE_STATS,
+        "Assuming my budget is fixed, how should I adjust my character and weapon copy strategy?",
+    )
+    assert answer == "Prioritize the character copy first."
+    assert breakdown is None
+    assert runs == []
+
+
 def test_answers_without_tool_call(monkeypatch):
     fake = _FakeClient([
-        _response(_msg(content=_no_session_context())),
+        _response(_msg(content=_no_sequence())),
         _response(_msg(content="You're already comfortable, save your pulls.")),
     ])
     monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
@@ -146,7 +166,7 @@ def test_tool_call_budget_is_capped(monkeypatch):
     # Extraction (pure hypothetical), then the model asks for a tool on every one
     # of the 3 allowed loops; the loop then stops and makes one final forced
     # (tool_choice=none) call for the answer.
-    responses = [_response(_msg(content=_no_session_context()))]
+    responses = [_response(_msg(content=_no_sequence()))]
     responses += [_response(_msg(content=None, tool_calls=[tc])) for _ in range(3)]
     responses.append(_response(_msg(content="Final forced answer.")))
     fake = _FakeClient(responses)
@@ -162,11 +182,11 @@ def test_tool_call_budget_is_capped(monkeypatch):
 
 
 class TestSessionStateIntegration:
-    """The scenario from the bug report: character already secured, weapon
-    lost the 50/50 (guarantee active), 41 pulls stated as remaining. The
-    reconciled state should drop the character phase entirely and simulate
-    only the weapon, from 0 pity, with the guarantee, not the original
-    full 1C/1W goal."""
+    """The scenario from the bug reports: character won at 42 pity (11
+    refunded), weapon lost at 31 pity (3 refunded), guarantee active. The
+    reconciled state should drop the character phase entirely (goal met)
+    and simulate only the weapon, from 0 pity, with the guarantee, not the
+    original full 1C/1W goal."""
 
     def test_reduces_goal_and_nets_refunds_before_the_model_ever_sees_it(self, monkeypatch):
         # The model calls the tool with no overrides, so whatever it actually
@@ -178,13 +198,10 @@ class TestSessionStateIntegration:
         params = {**BASELINE_PARAMS, "total_pulls": 100}
         stats = {**BASELINE_STATS, "initial_pulls": 100}
 
+        events = [_event(1, "character", "win", 42, 11), _event(2, "weapon", "loss", 31, 3)]
         tc = _tool_call("c1", "run_simulation", json.dumps({}))
         fake = _FakeClient([
-            _extraction_response(
-                character_obtained=True, character_pulls_spent=42, character_refunds=11,
-                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
-                weapon_guarantee_active=True,
-            ),
+            _extraction_response(events=events),
             _response(_msg(content=None, tool_calls=[tc])),
             _response(_msg(content="With the guarantee your weapon odds are strong.")),
         ])
@@ -203,9 +220,9 @@ class TestSessionStateIntegration:
             "weapon with 3 refunds and lost the 50/50, how likely am I with my remaining pulls?",
         )
 
-        assert breakdown is not None
-        assert "42 pity" in breakdown
-        assert "41 total pulls remaining" in breakdown
+        assert breakdown["status"] == "ok"
+        char_run = _find_line(breakdown, "Character Run 1 (obtained 1)")
+        assert [p["value"] for p in char_run["pills"]] == [100, "−", 42, "+", 11, 69, "WIN"]
         # The actual simulation ran on just the weapon, from scratch, guaranteed,
         # with pulls netted of refunds, not the naive gross subtraction.
         assert seen_kwargs["strategy"] == [{"banner": "weapon", "copies": 1}]
@@ -215,7 +232,7 @@ class TestSessionStateIntegration:
         assert answer == "With the guarantee your weapon odds are strong."
 
     def test_reconciled_scenario_is_simulated_before_the_model_gets_a_turn(self, monkeypatch):
-        # Third real bug: even with explicit instructions, the model kept
+        # Fourth real bug: even with explicit instructions, the model kept
         # re-deriving (and double-counting) the pull total itself. The fix
         # is to not depend on the model at all for the primary number: run
         # the reconciled scenario in code and hand the model an answer that
@@ -225,12 +242,9 @@ class TestSessionStateIntegration:
         params = {**BASELINE_PARAMS, "total_pulls": 100}
         stats = {**BASELINE_STATS, "initial_pulls": 100}
 
+        events = [_event(1, "character", "win", 42, 11), _event(2, "weapon", "loss", 31, 3)]
         fake = _FakeClient([
-            _extraction_response(
-                character_obtained=True, character_pulls_spent=42, character_refunds=11,
-                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
-                weapon_guarantee_active=True,
-            ),
+            _extraction_response(events=events),
             _response(_msg(content="With the guarantee, 41 pulls gives strong odds.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
@@ -248,51 +262,51 @@ class TestSessionStateIntegration:
         # Only 2 model calls total: the extraction, then the answer. The
         # model was never given a chance to pick its own total_pulls.
         assert len(fake.calls) == 2
+        # And the "Simulated Result" line is present, built from the
+        # deterministic pre-run, not asserted by the model.
+        result_line = _find_line(breakdown, "Simulated Result")
+        assert result_line["pills"][0]["value"] == "41 pulls → 80.00%"
 
-    def test_retries_extraction_once_then_surfaces_the_failure(self, monkeypatch):
-        # A reconciliation that never resolves must NOT silently answer from
-        # the unadjusted baseline as if nothing had been stated, the user
-        # needs to see that their described progress could not be verified.
-        tc = _tool_call("c1", "run_simulation", json.dumps({}))
+    def test_unreconcilable_sequence_declines_with_a_hardcoded_message(self, monkeypatch):
+        # Per the follow-up requirement: when the event sequence still can't
+        # be reconciled after one corrective retry, decline entirely and ask
+        # for alternate input, do NOT fall back to guessing on the baseline.
+        # The decline message is a hardcoded constant, not another model
+        # call, since a model has repeatedly failed to relay instructions
+        # like this reliably elsewhere in this app.
+        events = [_event(1, "weapon", "loss", 50, 0)]
         fake = _FakeClient([
-            # First extraction: pulls figures conflict, reconcile rejects it.
-            _extraction_response(
-                character_obtained=True, weapon_obtained=False,
-                pulls_remaining_stated=41, weapon_pulls_spent=50, total_pulls_restated=120,
-            ),
-            # Retry still doesn't resolve it (still conflicting).
-            _extraction_response(
-                character_obtained=True, weapon_obtained=False,
-                pulls_remaining_stated=41, weapon_pulls_spent=60, total_pulls_restated=120,
-            ),
-            _response(_msg(content=None, tool_calls=[tc])),
-            _response(_msg(content="Could not verify your progress, using the baseline goal.")),
+            # First extraction: stated remaining conflicts with the events.
+            _extraction_response(events=events, pulls_remaining_stated=999),
+            # Retry still conflicts.
+            _extraction_response(events=events, pulls_remaining_stated=888),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
-        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
 
         answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "confusing question")
 
-        assert breakdown is not None
-        assert "Could not verify" in breakdown        # the caveat is visible, not silent
-        assert len(fake.calls) == 4                    # 2 extractions + 1 tool loop + 1 answer
-        assert answer == "Could not verify your progress, using the baseline goal."
-        # It still ran the actual simulation on the unadjusted baseline, since
-        # there's no reliable reconciled state to use instead.
-        assert len(runs) == 1
+        assert answer == PARSE_FAILURE_MESSAGE
+        assert runs == []
+        assert breakdown == {"status": "error",
+                              "message": "Could not parse a clear sequence of pull events from this question."}
+        # No tool call and no forced-answer call happened: exactly the 2
+        # extraction attempts, then the hardcoded decline, nothing more.
+        assert len(fake.calls) == 2
 
     def test_goal_already_complete_skips_simulation(self, monkeypatch):
+        events = [_event(1, "character", "win", 20, 0), _event(2, "weapon", "win", 30, 0)]
         fake = _FakeClient([
-            _extraction_response(
-                character_obtained=True, weapon_obtained=True, pulls_remaining_stated=20,
-            ),
+            _extraction_response(events=events),
             _response(_msg(content="You already have everything you need.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
 
         answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "am I done?")
 
-        assert "complete" in breakdown
+        assert breakdown["status"] == "ok"
+        status_line = _find_line(breakdown, "Goal Status")
+        assert status_line["pills"][0]["value"] == "GOAL COMPLETE"
+        assert status_line["pills"][0]["color"] == "green"
         assert runs == []                              # nothing was simulated
         assert answer == "You already have everything you need."
         assert fake.calls[-1]["tool_choice"] == "none"  # no tool offered for this path
@@ -308,14 +322,11 @@ class TestSessionStateIntegration:
         params = {**BASELINE_PARAMS, "total_pulls": 100}
         stats = {**BASELINE_STATS, "initial_pulls": 100}
 
+        events = [_event(1, "character", "win", 42, 11), _event(2, "weapon", "loss", 31, 3)]
         tc = _tool_call("c1", "run_simulation", json.dumps({}))
         fake = _FakeClient([
             _extraction_response(
-                character_obtained=True, character_pulls_spent=42, character_refunds=11,
-                weapon_obtained=False, weapon_pulls_spent=31, weapon_refunds=3,
-                weapon_guarantee_active=True,
-                additional_pulls_stated=45,
-                additional_character_copies_wanted=1,
+                events=events, additional_pulls_stated=45, additional_character_copies_wanted=1,
             ),
             _response(_msg(content=None, tool_calls=[tc])),
             _response(_msg(content="With the extra pulls, both goals are within reach.")),
@@ -337,9 +348,11 @@ class TestSessionStateIntegration:
             "around 45 more from this half of the patch?",
         )
 
-        assert breakdown is not None
-        assert "86 total pulls remaining" in breakdown  # 41 net remaining + 45 additional
-        assert "already includes the 45 additional pulls" in breakdown
+        assert breakdown["status"] == "ok"
+        additional_line = _find_line(breakdown, "Additional Pulls Mentioned")
+        assert additional_line["pills"][-1]["value"] == 86
+        goal_line = _find_line(breakdown, "Restated Goal")
+        assert goal_line["pills"][0]["value"] == "1 character and 1 weapon → 2 characters and 1 weapon"
         assert seen_kwargs["total_pulls"] == 86
         # 1 more character copy wanted (the one already obtained is dropped),
         # plus the still-needed weapon.
@@ -347,6 +360,38 @@ class TestSessionStateIntegration:
         assert {"banner": "weapon", "copies": 1} in seen_kwargs["strategy"]
         assert seen_kwargs["start_weapon_guarantee"] is True
         assert answer == "With the extra pulls, both goals are within reach."
+
+    def test_multiple_losses_before_a_win_end_to_end(self, monkeypatch):
+        # Exactly what the old flat per-banner schema could not express at
+        # all: two losses on the same banner before the eventual win.
+        params = {**BASELINE_PARAMS, "total_pulls": 200}
+        stats = {**BASELINE_STATS, "initial_pulls": 200}
+
+        events = [
+            _event(1, "weapon", "loss", 50, 2),
+            _event(2, "weapon", "loss", 60, 1),
+            _event(3, "weapon", "win", 10, 0),
+        ]
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="You got there on the third try.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "I lost the weapon 50/50 at 50 pity with 2 refunds, lost again at 60 pity with "
+            "1 refund, then finally won at 10 pity with no refunds. How am I doing on the "
+            "character now?",
+        )
+
+        assert breakdown["status"] == "ok"
+        assert _find_line(breakdown, "Weapon Run 1 (obtained 0)")
+        assert _find_line(breakdown, "Weapon Run 2 (obtained 0)")
+        assert _find_line(breakdown, "Weapon Run 3 (obtained 1)")
+        assert _find_line(breakdown, "Character Run 1 (obtained 0)")  # in progress, never mentioned
+        assert answer == "You got there on the third try."
 
 
 class TestToolExecutor:

@@ -1,132 +1,147 @@
 """session_state.py
-Deterministic reconciliation of a mid-session narrative (what the advisor's
-extraction call pulls out of a free-text question) against the baseline goal.
+Deterministic reconciliation of a mid-session narrative (an ordered sequence
+of pull events the advisor's extraction call pulls out of a free-text
+question) against the baseline goal.
 
 No OpenAI calls happen here and no math happens in the model: the extraction
-call reports only raw, explicitly-stated numbers (pulls spent per banner,
-4-star refunds received per banner, any additional pulls or extra copies
-mentioned), and this module does every subtraction and addition. advisor.py
-is the only caller, and only re-invokes the extraction model when this
-module reports an inconsistency.
+call reports one atomic fact per event ("this banner, this outcome, this
+pity, this refund count, in this position"), and this module is the only
+place that applies the actual game rules: subtract pulls spent, add refunds
+back, reset pity on any outcome, track guarantees and obtained counts. It
+also builds the structured "pill" data the UI renders directly, so the
+displayed breakdown is assembled from the same verified numbers the
+simulation itself uses, not asserted separately by a model.
+
+advisor.py is the only caller, and only re-invokes the extraction model when
+this module reports an inconsistency (capped at one retry).
 """
 
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
+TOOLTIPS = {
+    "start_pulls": "Starting number of pulls for run",
+    "pity": "Number of pulls spent in this run",
+    "refund": "Number of refunded pulls in this run",
+    "run_result": "Resulting number of pulls after operations in this run",
+    "final_result": "The calculated amount of pulls after this sequence of actions",
+    "obtained": "Current number of characters or weapons after this run",
+    "subtract_op": "Pulls were spent",
+    "add_op": "Adding pulls gained",
+    "guarantee": "Whether or not this run is guaranteed to get the character or weapon",
+    "outcome": "Whether this run resulted in a win or a loss",
+    "goal": "The character and weapon copies being planned for, based on the original goal and anything added or already obtained",
+    "simulated": "The actual simulated success rate using the pulls and goal above",
+    "status": "The current state of your goal after the events above",
+}
 
-def _net_pulls_used(extracted):
-    """Sum (pulls_spent - refunds) across banners that were actually mentioned.
-    Returns None if neither banner reported a pulls_spent figure."""
-    total = 0
-    any_given = False
-    for banner in ("character", "weapon"):
-        spent = extracted.get(f"{banner}_pulls_spent")
-        if spent is not None:
-            any_given = True
-            refunds = extracted.get(f"{banner}_refunds") or 0
-            total += max(spent - refunds, 0)
-    return total if any_given else None
-
-
-def _resolve_total_pulls(extracted, baseline_total_pulls):
-    """Figure out pulls remaining from whichever combination of fields the
-    question stated. `additional_pulls_stated` is an amount to add on top of
-    whatever remains (e.g. "plus about 45 more from this patch"), separate
-    from a direct restatement of the total. Returns (total_pulls, error)."""
-    stated = extracted.get("pulls_remaining_stated")
-    restated_total = extracted.get("total_pulls_restated")
-    additional = extracted.get("additional_pulls_stated") or 0
-    net_used = _net_pulls_used(extracted)
-
-    if additional < 0:
-        return None, f"additional_pulls_stated ({additional}) cannot be negative"
-
-    computed = None
-    base = restated_total if restated_total is not None else baseline_total_pulls
-    if net_used is not None:
-        computed = base - net_used + additional
-
-    if stated is not None and computed is not None and stated != computed:
-        return None, (
-            f"pulls_remaining_stated ({stated}) does not reconcile with net pulls used "
-            f"({net_used}) plus additional_pulls_stated ({additional}) against "
-            f"total_pulls ({base}) = {computed}"
-        )
-
-    if stated is not None:
-        return stated, None
-    if computed is not None:
-        return computed, None
-    return None, (
-        "could not determine pulls remaining: no pulls_remaining_stated and no "
-        "per-banner pulls_spent given"
-    )
+_BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
 
 
-def _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls,
-                      goal_complete=False, pulls_exhausted=False):
-    parts = []
-    for banner, label in (("character", "character"), ("weapon", "weapon")):
-        if extracted.get(f"{banner}_obtained"):
-            spent = extracted.get(f"{banner}_pulls_spent")
-            refunds = extracted.get(f"{banner}_refunds")
-            detail = ""
-            if spent is not None:
-                detail = f" at {spent} pity"
-                if refunds:
-                    detail += f" ({refunds} refunded)"
-            parts.append(f"{label} secured{detail}")
+def _pill(kind, value, color, tooltip_key):
+    return {"kind": kind, "value": value, "color": color, "tooltip": TOOLTIPS[tooltip_key]}
 
-    if extracted.get("character_guarantee_active") and chars_remaining >= 1:
-        parts.append("character 50/50 lost, guarantee active")
-    if extracted.get("weapon_guarantee_active") and weapons_remaining >= 1:
-        parts.append("weapon 50/50 lost, guarantee active")
 
-    additional_chars = extracted.get("additional_character_copies_wanted") or 0
-    additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
-    if additional_chars:
-        parts.append(f"goal expanded by {additional_chars} extra character cop"
-                      f"{'y' if additional_chars == 1 else 'ies'}")
-    if additional_weapons:
-        parts.append(f"goal expanded by {additional_weapons} extra weapon"
-                      f"{'' if additional_weapons == 1 else 's'}")
+def _validate_events(events, char_pity_config, weapon_pity_config):
+    if not isinstance(events, list):
+        return "events must be a list"
+    expected_order = 1
+    for event in events:
+        if event.get("banner_type") not in ("character", "weapon"):
+            return f"event_order {event.get('event_order')}: banner_type must be 'character' or 'weapon'"
+        if event.get("outcome") not in ("win", "loss"):
+            return f"event_order {event.get('event_order')}: outcome must be 'win' or 'loss'"
+        if event.get("event_order") != expected_order:
+            return (
+                f"events must be numbered sequentially starting from 1 in the order "
+                f"they occurred; expected event_order {expected_order}, got {event.get('event_order')}"
+            )
+        expected_order += 1
 
-    situation = ", ".join(parts) if parts else "no prior progress stated"
+        hard_pity = (char_pity_config if event["banner_type"] == "character" else weapon_pity_config)["hard_pity"]
+        pity = event.get("pity_at_outcome")
+        refunds = event.get("refund_count")
+        if not isinstance(pity, int) or not (0 <= pity <= hard_pity):
+            return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
+        if not isinstance(refunds, int) or refunds < 0:
+            return f"event_order {event['event_order']}: refund_count ({refunds}) cannot be negative"
+        if refunds > pity:
+            return f"event_order {event['event_order']}: refund_count ({refunds}) exceeds pity_at_outcome ({pity})"
+    return None
 
-    if goal_complete:
-        return f"{situation}. Goal already complete, nothing left to pull for."
 
-    needed = []
-    if chars_remaining >= 1:
-        needed.append(f"{chars_remaining} character cop{'y' if chars_remaining == 1 else 'ies'}")
-    if weapons_remaining >= 1:
-        needed.append(f"{weapons_remaining} weapon{'s' if weapons_remaining != 1 else ''}")
-    needed_str = " and ".join(needed)
+def _process_events(events, running_pulls):
+    """Walk the event sequence in order, applying the deterministic game
+    rules, and build one pill-line per event. Returns (lines, char_obtained,
+    weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
+    running_pulls, error)."""
+    counts = {"character": 0, "weapon": 0}
+    guarantees = {"character": False, "weapon": False}
+    run_index = {"character": 0, "weapon": 0}
+    lines = []
 
-    if pulls_exhausted:
-        return f"{situation}. Still need {needed_str}, but no pulls remain."
+    for event in events:
+        banner = event["banner_type"]
+        outcome = event["outcome"]
+        pity = event["pity_at_outcome"]
+        refunds = event["refund_count"]
 
-    # additional_pulls_stated is already folded into total_pulls by this point
-    # (see _resolve_total_pulls); say so explicitly so the interpretation
-    # model doesn't add it a second time on top of this final figure.
-    additional_pulls = extracted.get("additional_pulls_stated") or 0
-    pulls_note = f" (already includes the {additional_pulls} additional pulls you mentioned)" if additional_pulls else ""
-    return f"{situation}. Still need {needed_str}, with {total_pulls} total pulls remaining{pulls_note}."
+        run_index[banner] += 1
+        start_pulls = running_pulls
+        running_pulls -= pity
+        running_pulls += refunds
+
+        if outcome == "win":
+            counts[banner] += 1
+            guarantees[banner] = False
+        else:
+            guarantees[banner] = True
+
+        if running_pulls < 0:
+            return (lines, counts["character"], counts["weapon"], guarantees["character"],
+                    guarantees["weapon"], run_index["character"], run_index["weapon"], running_pulls,
+                    f"event_order {event['event_order']}: pulls consumed exceed the stated total budget")
+
+        lines.append({
+            "label": f"{_BANNER_LABEL[banner]} Run {run_index[banner]} (obtained {counts[banner]})",
+            "pills": [
+                _pill("number", start_pulls, "cyan", "start_pulls"),
+                _pill("operator", "−", "magenta", "subtract_op"),
+                _pill("number", pity, "cyan", "pity"),
+                _pill("operator", "+", "magenta", "add_op"),
+                _pill("number", refunds, "cyan", "refund"),
+                _pill("result", running_pulls, "light_green", "run_result"),
+                _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),
+            ],
+        })
+
+    return (lines, counts["character"], counts["weapon"], guarantees["character"], guarantees["weapon"],
+            run_index["character"], run_index["weapon"], running_pulls, None)
 
 
 def reconcile(extracted, baseline_params, baseline_stats):
-    """Turn the extraction model's structured output into a verified,
-    ready-to-simulate state, or a specific error to feed back for one
-    corrective re-extraction.
+    """Turn the extraction model's structured event sequence into a
+    verified, ready-to-simulate state plus the structured pill data the UI
+    renders, or a specific error to feed back for one corrective
+    re-extraction.
 
-    Returns a dict. `applies` is False when the question had no session
-    narrative to reconcile (a pure hypothetical), the caller should fall
-    through to the existing baseline-driven flow. When `applies` is True,
-    `ok` says whether reconciliation succeeded; on failure `error` names the
-    specific inconsistency for the retry prompt.
+    Returns a dict. `applies` is False when the question described no event
+    sequence at all (a pure hypothetical or a pure strategy question), the
+    caller should fall through to the existing baseline-driven flow. When
+    `applies` is True, `ok` says whether reconciliation succeeded; on
+    failure `error` names the specific inconsistency for the retry prompt.
     """
-    if not extracted.get("has_session_context"):
+    if not extracted.get("has_event_sequence"):
         return {"applies": False}
+
+    events = extracted.get("events") or []
+    if not events:
+        return {"applies": True, "ok": False,
+                "error": "has_event_sequence was true but no events were reported"}
+
+    error = _validate_events(events, baseline_params["char_pity_config"], baseline_params["weapon_pity_config"])
+    if error:
+        return {"applies": True, "ok": False, "error": error}
 
     additional_chars = extracted.get("additional_character_copies_wanted") or 0
     additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
@@ -140,47 +155,121 @@ def reconcile(extracted, baseline_params, baseline_stats):
         return {"applies": True, "ok": False,
                 "error": f"requested weapon copies ({desired_weapons}) exceed the max of {MAX_WEAPON_COPIES}"}
 
-    char_obtained = bool(extracted.get("character_obtained"))
-    weapon_obtained = bool(extracted.get("weapon_obtained"))
+    additional_pulls = extracted.get("additional_pulls_stated") or 0
+    if additional_pulls < 0:
+        return {"applies": True, "ok": False, "error": f"additional_pulls_stated ({additional_pulls}) cannot be negative"}
 
-    chars_remaining = max(desired_characters - (1 if char_obtained else 0), 0)
-    weapons_remaining = max(desired_weapons - (1 if weapon_obtained else 0), 0)
+    total_pulls_budget = extracted.get("total_pulls_restated") or baseline_params["total_pulls"]
 
-    char_hard_pity = baseline_params["char_pity_config"]["hard_pity"]
-    weapon_hard_pity = baseline_params["weapon_pity_config"]["hard_pity"]
-    for banner, hard_pity in (("character", char_hard_pity), ("weapon", weapon_hard_pity)):
-        spent = extracted.get(f"{banner}_pulls_spent")
-        refunds = extracted.get(f"{banner}_refunds")
-        if spent is not None and not (0 <= spent <= hard_pity):
-            return {"applies": True, "ok": False,
-                    "error": f"{banner}_pulls_spent ({spent}) is out of range 0-{hard_pity}"}
-        if refunds is not None and spent is not None and refunds > spent:
-            return {"applies": True, "ok": False,
-                    "error": f"{banner}_refunds ({refunds}) exceeds {banner}_pulls_spent ({spent})"}
-
-    total_pulls, error = _resolve_total_pulls(extracted, baseline_params["total_pulls"])
+    (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
+     char_events, weapon_events, running_pulls, error) = _process_events(events, total_pulls_budget)
     if error:
         return {"applies": True, "ok": False, "error": error}
 
+    lines = list(event_lines)
+
+    # Deterministic conservation check: total consumed across every event,
+    # plus whatever remains, must equal the stated starting budget. This is
+    # exactly what the event walk above already enforces arithmetically;
+    # cross-check it against a direct restatement if the question gave one.
+    stated = extracted.get("pulls_remaining_stated")
+    pre_addition_remaining = running_pulls
+    if stated is not None and stated != pre_addition_remaining + additional_pulls:
+        return {"applies": True, "ok": False, "error": (
+            f"pulls_remaining_stated ({stated}) does not reconcile with the events: "
+            f"{total_pulls_budget} starting pulls, {total_pulls_budget - pre_addition_remaining} net "
+            f"consumed across {len(events)} event(s), leaving {pre_addition_remaining}, "
+            f"plus additional_pulls_stated ({additional_pulls}) = {pre_addition_remaining + additional_pulls}"
+        )}
+
+    if additional_pulls:
+        post_addition = pre_addition_remaining + additional_pulls
+        lines.append({
+            "label": "Additional Pulls Mentioned",
+            "pills": [
+                _pill("number", pre_addition_remaining, "cyan", "start_pulls"),
+                _pill("operator", "+", "magenta", "add_op"),
+                _pill("number", additional_pulls, "cyan", "refund"),
+                _pill("result", post_addition, "light_green", "run_result"),
+            ],
+        })
+        running_pulls = post_addition
+
+    total_pulls = running_pulls
+    # Mark the true final "pulls remaining" pill with the distinct tooltip
+    # for the figure that actually feeds the simulation. This is the last
+    # pill of *kind* "result" across all lines so far, not simply the last
+    # pill of the last line: when there's no "Additional Pulls" line, the
+    # last event line's last pill is its WIN/LOSS outcome, not its result.
+    for line in reversed(lines):
+        for i in range(len(line["pills"]) - 1, -1, -1):
+            if line["pills"][i]["kind"] == "result":
+                line["pills"][i] = dict(line["pills"][i], tooltip=TOOLTIPS["final_result"])
+                break
+        else:
+            continue
+        break
+
+    chars_remaining = max(desired_characters - char_obtained, 0)
+    weapons_remaining = max(desired_weapons - weapon_obtained, 0)
+
+    goal_pill_text = _goal_text(baseline_stats, additional_chars, additional_weapons)
+    goal_line = {"label": "Restated Goal", "pills": [_pill("goal", goal_pill_text, "default", "goal")]}
+
     if chars_remaining == 0 and weapons_remaining == 0:
+        lines.append(goal_line)
+        lines.append({"label": "Goal Status",
+                      "pills": [_pill("status", "GOAL COMPLETE", "green", "status")]})
         return {
             "applies": True, "ok": True, "goal_complete": True, "pulls_exhausted": False,
             "strategy": [], "total_pulls": total_pulls,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
-            "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining,
-                                           total_pulls, goal_complete=True),
+            "lines": lines,
         }
 
     if total_pulls <= 0:
+        lines.append(goal_line)
+        lines.append({"label": "Goal Status",
+                      "pills": [_pill("status", "NO PULLS REMAIN", "red", "status")]})
         return {
             "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": True,
             "strategy": [], "total_pulls": 0,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
-            "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining,
-                                           0, pulls_exhausted=True),
+            "lines": lines,
         }
+
+    # A banner nobody mentioned keeps whatever the original form stated for
+    # it (nothing here contradicts that); a banner that appeared in the
+    # sequence gets its pity forced to 0 (an outcome, win or loss, always
+    # means a 5-star was just obtained) and its guarantee from the last
+    # event on it.
+    start_char_pity = 0 if char_events else baseline_params["start_char_pity"]
+    start_char_guarantee = char_guarantee if char_events else baseline_params["start_char_guarantee"]
+    start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
+    start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
+
+    if chars_remaining >= 1:
+        lines.append({
+            "label": f"Character Run {char_events + 1} (obtained {char_obtained})",
+            "pills": [
+                _pill("number", total_pulls, "cyan", "start_pulls"),
+                _pill("flag", "GUARANTEE: TRUE" if start_char_guarantee else "GUARANTEE: FALSE",
+                      "green" if start_char_guarantee else "red", "guarantee"),
+            ],
+        })
+    if weapons_remaining >= 1:
+        lines.append({
+            "label": f"Weapon Run {weapon_events + 1} (obtained {weapon_obtained})",
+            "pills": [
+                _pill("number", total_pulls, "cyan", "start_pulls"),
+                _pill("flag", "GUARANTEE: TRUE" if start_weapon_guarantee else "GUARANTEE: FALSE",
+                      "green" if start_weapon_guarantee else "red", "guarantee"),
+            ],
+        })
+
+    lines.append(goal_line)
 
     # Preserve the baseline's relative pull order for whichever banners remain.
     strategy = [
@@ -200,9 +289,37 @@ def reconcile(extracted, baseline_params, baseline_stats):
         "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": False,
         "strategy": strategy,
         "total_pulls": total_pulls,
-        "start_char_pity": 0,
-        "start_char_guarantee": bool(extracted.get("character_guarantee_active")) if chars_remaining >= 1 else False,
-        "start_weapon_pity": 0,
-        "start_weapon_guarantee": bool(extracted.get("weapon_guarantee_active")) if weapons_remaining >= 1 else False,
-        "breakdown": _build_breakdown(extracted, chars_remaining, weapons_remaining, total_pulls),
+        "start_char_pity": start_char_pity,
+        "start_char_guarantee": start_char_guarantee,
+        "start_weapon_pity": start_weapon_pity,
+        "start_weapon_guarantee": start_weapon_guarantee,
+        "lines": lines,
+    }
+
+
+def _goal_text(baseline_stats, additional_chars, additional_weapons):
+    orig_chars = baseline_stats["desired_characters"]
+    orig_weapons = baseline_stats["desired_weapons"]
+    new_chars = orig_chars + additional_chars
+    new_weapons = orig_weapons + additional_weapons
+
+    def _phrase(chars, weapons):
+        parts = []
+        if chars:
+            parts.append(f"{chars} character{'s' if chars != 1 else ''}")
+        if weapons:
+            parts.append(f"{weapons} weapon{'s' if weapons != 1 else ''}")
+        return " and ".join(parts) if parts else "nothing"
+
+    if additional_chars or additional_weapons:
+        return f"{_phrase(orig_chars, orig_weapons)} → {_phrase(new_chars, new_weapons)}"
+    return _phrase(new_chars, new_weapons)
+
+
+def build_result_line(total_pulls, success_rate):
+    """The deterministic pre-run's result, appended as its own pill line
+    once advisor.py has actually simulated the reconciled scenario."""
+    return {
+        "label": "Simulated Result",
+        "pills": [_pill("result", f"{total_pulls} pulls → {success_rate}", "light_green", "simulated")],
     }
