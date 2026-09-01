@@ -74,8 +74,8 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   }
 
   return (
-    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-      <summary className="text-sm font-medium text-slate-400 select-none">Ask a Follow-up (AI)</summary>
+    <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4">
+      <summary className="text-sm font-medium text-slate-400 select-none cursor-pointer">Ask a Follow-up (AI)</summary>
       <div className="mt-4 space-y-3">
         <p className="text-xs text-slate-500">
           Ask an open-ended what-if the presets do not cover. The AI re-runs the

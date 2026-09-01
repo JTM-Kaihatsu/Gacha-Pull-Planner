@@ -28,6 +28,7 @@ TOOLTIPS = {
     "obtained": "Current number of characters or weapons after this run",
     "subtract_op": "Pulls were spent",
     "add_op": "Adding pulls gained",
+    "equals_op": "Equals: the result of the operations to the left",
     "guarantee": "Whether or not this run is guaranteed to get the character or weapon",
     "outcome": "Whether this run resulted in a win or a loss",
     "goal": "The character and weapon copies being planned for, based on the original goal and anything added or already obtained",
@@ -76,7 +77,11 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
     return None
 
 
-def _process_events(events, running_pulls):
+def _run_label(banner, run_number, obtained, desired):
+    return f"{_BANNER_LABEL[banner]} Run {run_number} (obtained {obtained} of {desired})"
+
+
+def _process_events(events, running_pulls, desired_characters, desired_weapons):
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
     weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
@@ -84,6 +89,7 @@ def _process_events(events, running_pulls):
     counts = {"character": 0, "weapon": 0}
     guarantees = {"character": False, "weapon": False}
     run_index = {"character": 0, "weapon": 0}
+    desired = {"character": desired_characters, "weapon": desired_weapons}
     lines = []
     any_unknown_pity = False
 
@@ -101,13 +107,15 @@ def _process_events(events, running_pulls):
         else:
             guarantees[banner] = True
 
+        label = _run_label(banner, run_index[banner], counts[banner], desired[banner])
+
         if pity is None:
             # No exact pity given for this event: it still updates the
             # obtained count and guarantee above, but can't touch the pulls
             # ledger. The caller must fall back to a direct restatement.
             any_unknown_pity = True
             lines.append({
-                "label": f"{_BANNER_LABEL[banner]} Run {run_index[banner]} (obtained {counts[banner]})",
+                "label": label,
                 "pills": [
                     _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),
                 ],
@@ -125,13 +133,14 @@ def _process_events(events, running_pulls):
                     f"event_order {event['event_order']}: pulls consumed exceed the stated total budget")
 
         lines.append({
-            "label": f"{_BANNER_LABEL[banner]} Run {run_index[banner]} (obtained {counts[banner]})",
+            "label": label,
             "pills": [
                 _pill("number", start_pulls, "cyan", "start_pulls"),
                 _pill("operator", "−", "magenta", "subtract_op"),
                 _pill("number", pity, "cyan", "pity"),
                 _pill("operator", "+", "magenta", "add_op"),
                 _pill("number", refunds, "cyan", "refund"),
+                _pill("operator", "=", "magenta", "equals_op"),
                 _pill("result", running_pulls, "light_green", "run_result"),
                 _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),
             ],
@@ -185,7 +194,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
      char_events, weapon_events, running_pulls, any_unknown_pity,
-     error) = _process_events(events, total_pulls_budget)
+     error) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons)
     if error:
         return {"applies": True, "ok": False, "error": error}
 
@@ -236,6 +245,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
                 _pill("number", pre_addition_remaining, "cyan", "start_pulls"),
                 _pill("operator", "+", "magenta", "add_op"),
                 _pill("number", additional_pulls, "cyan", "refund"),
+                _pill("operator", "=", "magenta", "equals_op"),
                 _pill("result", post_addition, "light_green", "run_result"),
             ],
         })
@@ -298,7 +308,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     if chars_remaining >= 1:
         lines.append({
-            "label": f"Character Run {char_events + 1} (obtained {char_obtained})",
+            "label": _run_label("character", char_events + 1, char_obtained, desired_characters),
             "pills": [
                 _pill("number", total_pulls, "cyan", "start_pulls"),
                 _pill("flag", "GUARANTEE: TRUE" if start_char_guarantee else "GUARANTEE: FALSE",
@@ -307,7 +317,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
         })
     if weapons_remaining >= 1:
         lines.append({
-            "label": f"Weapon Run {weapon_events + 1} (obtained {weapon_obtained})",
+            "label": _run_label("weapon", weapon_events + 1, weapon_obtained, desired_weapons),
             "pills": [
                 _pill("number", total_pulls, "cyan", "start_pulls"),
                 _pill("flag", "GUARANTEE: TRUE" if start_weapon_guarantee else "GUARANTEE: FALSE",

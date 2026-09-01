@@ -221,8 +221,8 @@ class TestSessionStateIntegration:
         )
 
         assert breakdown["status"] == "ok"
-        char_run = _find_line(breakdown, "Character Run 1 (obtained 1)")
-        assert [p["value"] for p in char_run["pills"]] == [100, "−", 42, "+", 11, 69, "WIN"]
+        char_run = _find_line(breakdown, "Character Run 1 (obtained 1 of 1)")
+        assert [p["value"] for p in char_run["pills"]] == [100, "−", 42, "+", 11, "=", 69, "WIN"]
         # The actual simulation ran on just the weapon, from scratch, guaranteed,
         # with pulls netted of refunds, not the naive gross subtraction.
         assert seen_kwargs["strategy"] == [{"banner": "weapon", "copies": 1}]
@@ -387,10 +387,10 @@ class TestSessionStateIntegration:
         )
 
         assert breakdown["status"] == "ok"
-        assert _find_line(breakdown, "Weapon Run 1 (obtained 0)")
-        assert _find_line(breakdown, "Weapon Run 2 (obtained 0)")
-        assert _find_line(breakdown, "Weapon Run 3 (obtained 1)")
-        assert _find_line(breakdown, "Character Run 1 (obtained 0)")  # in progress, never mentioned
+        assert _find_line(breakdown, "Weapon Run 1 (obtained 0 of 1)")
+        assert _find_line(breakdown, "Weapon Run 2 (obtained 0 of 1)")
+        assert _find_line(breakdown, "Weapon Run 3 (obtained 1 of 1)")
+        assert _find_line(breakdown, "Character Run 1 (obtained 0 of 1)")  # in progress, never mentioned
         assert answer == "You got there on the third try."
 
 

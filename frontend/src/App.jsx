@@ -194,8 +194,8 @@ export default function App() {
 
             {baseline && <FollowUpAdvisor baseline={baseline} confidence={result.summary?.confidence} />}
 
-            <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4 cursor-pointer">
-              <summary className="text-sm font-medium text-slate-400 select-none">Failed Run Stats</summary>
+            <details className="bg-slate-800/40 border border-slate-700 rounded-xl p-4">
+              <summary className="text-sm font-medium text-slate-400 select-none cursor-pointer">Failed Run Stats</summary>
               <div className="mt-3 space-y-4">
 
                 {stats.most_common_failure_state && (
