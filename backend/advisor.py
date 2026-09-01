@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
-from session_state import reconcile
+from session_state import build_result_line, reconcile
 from simulation import run_simulation_verbose
 
 # Fewer trials than the main endpoint: the advisor may run several sims per
@@ -25,37 +25,64 @@ from simulation import run_simulation_verbose
 ADVISOR_TRIALS = 4000
 MAX_TOOL_CALLS = 4
 
+# Hardcoded, not an LLM call: when an event sequence can't be reconciled even
+# after one corrective retry, decline plainly rather than guess. This is
+# deterministic on purpose, the same lesson as everywhere else in this
+# module, a model asked to relay a specific message has repeatedly failed to
+# do so reliably.
+PARSE_FAILURE_MESSAGE = (
+    "The AI couldn't parse your situation, could you please enter it in a different way? "
+    "For example: \"I pulled and won the character I wanted early (30 pity, with 5 refunds), "
+    "then lost the weapon banner also early (50 pity, with 3 refunds). Is it worth it for me "
+    "to keep pulling?\""
+)
+
+EVENT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "event_order": {
+            "type": "integer",
+            "description": "1-based position of this event in the sequence it occurred, in order.",
+        },
+        "banner_type": {"type": "string", "enum": ["character", "weapon"]},
+        "outcome": {"type": "string", "enum": ["win", "loss"]},
+        "pity_at_outcome": {
+            "type": ["integer", "null"],
+            "description": "Raw pulls spent on this banner to reach this outcome (the pity count). Null if the question did not give an exact pity/pull count for this specific event (e.g. 'I won with 62 to spare', 'I lost, and I have 81 pulls left'); in that case report pulls_remaining_stated instead so the true total can still be known.",
+        },
+        "refund_count": {
+            "type": "integer",
+            "description": "4-star refund pulls received back during this event, if stated (0 if none).",
+        },
+    },
+    "required": ["event_order", "banner_type", "outcome", "pity_at_outcome", "refund_count"],
+    "additionalProperties": False,
+}
+
 SESSION_STATE_SCHEMA = {
     "type": "object",
     "properties": {
-        "has_session_context": {
+        "has_event_sequence": {
             "type": "boolean",
             "description": (
-                "true only if the question describes real progress already made this "
-                "session (an item obtained, pulls already spent, a lost 50/50). false "
-                "for a pure hypothetical with no session history."
+                "true only if the question describes one or more actual pull events that "
+                "already happened this session (a banner pulled to a win or a loss, with a "
+                "pity count). false for a pure hypothetical or strategy question with no "
+                "event history, for example 'how should I split my budget between "
+                "characters and weapons'."
             ),
         },
-        "character_obtained": {"type": ["boolean", "null"]},
-        "character_pulls_spent": {
-            "type": ["integer", "null"],
-            "description": "Raw pulls put into the character banner this session (equals pity if obtained; the gross count, not yet reduced by any refund).",
+        "events": {
+            "type": "array",
+            "description": (
+                "One object per discrete pull event, in the order they occurred. Each "
+                "event is atomic: which banner, whether it was won or lost, the pity "
+                "count at that outcome, and any 4-star refund received. Do not sum, "
+                "combine, or reorder events yourself; report exactly what is stated, "
+                "one event at a time."
+            ),
+            "items": EVENT_SCHEMA,
         },
-        "character_refunds": {
-            "type": ["integer", "null"],
-            "description": "4-star refund pulls received back during that character-banner spending, if stated. Do not subtract this yourself.",
-        },
-        "character_guarantee_active": {"type": ["boolean", "null"]},
-        "weapon_obtained": {"type": ["boolean", "null"]},
-        "weapon_pulls_spent": {
-            "type": ["integer", "null"],
-            "description": "Raw pulls put into the weapon banner this session (gross count, not yet reduced by any refund).",
-        },
-        "weapon_refunds": {
-            "type": ["integer", "null"],
-            "description": "4-star refund pulls received back during that weapon-banner spending, if stated. Do not subtract this yourself.",
-        },
-        "weapon_guarantee_active": {"type": ["boolean", "null"]},
         "pulls_remaining_stated": {
             "type": ["integer", "null"],
             "description": "A direct, total restatement of pulls remaining (e.g. 'I have 41 pulls left'). Do not use this for an amount meant to be added on top of the remaining pulls; use additional_pulls_stated for that instead.",
@@ -75,29 +102,35 @@ SESSION_STATE_SCHEMA = {
         },
     },
     "required": [
-        "has_session_context", "character_obtained", "character_pulls_spent", "character_refunds",
-        "character_guarantee_active", "weapon_obtained", "weapon_pulls_spent", "weapon_refunds",
-        "weapon_guarantee_active", "pulls_remaining_stated", "additional_pulls_stated",
+        "has_event_sequence", "events", "pulls_remaining_stated", "additional_pulls_stated",
         "total_pulls_restated", "additional_character_copies_wanted", "additional_weapon_copies_wanted",
     ],
     "additionalProperties": False,
 }
 
 EXTRACTION_SYSTEM_PROMPT = (
-    "You extract structured facts from a gacha pull follow-up question. Do not do "
-    "any math and do not decide a strategy. Never net a refund against a pulls-spent "
-    "figure yourself, and never add an additional-pulls figure to a remaining-pulls "
-    "figure yourself; report every raw number separately and let the caller do all "
-    "arithmetic. Only report what the user explicitly stated: whether the character "
-    "and/or weapon were already obtained, the raw (pre-refund) pulls spent on each "
-    "banner if given, any 4-star refunds received on each banner if given, whether a "
-    "50/50 was lost leaving a guarantee, any pull counts mentioned (a direct total "
-    "restatement goes in pulls_remaining_stated; an amount to add on top of whatever "
-    "remains goes in additional_pulls_stated instead, never combined), and any extra "
-    "copies wanted beyond the original goal (additional_character_copies_wanted / "
-    "additional_weapon_copies_wanted). Leave a field null if the question does not "
-    "state it. Set has_session_context to false if the question is a pure "
-    "hypothetical with no real session history."
+    "You extract a sequence of discrete pull events from a gacha follow-up question. Do "
+    "not do any math, do not aggregate multiple events into one, and do not decide a "
+    "strategy. If the question describes one or more actual pulls that already "
+    "happened (a banner pulled to a win or a loss), report each one as its own event: "
+    "which banner, win or loss, and (if an exact number was given) the pity count at "
+    "that outcome and any 4-star refund received (0 if none stated). Number events "
+    "sequentially starting from 1 in the order they occurred; never combine two events "
+    "into one or sum their numbers together. Users often describe an outcome without "
+    "giving its exact pity, instead stating how many pulls they have left afterward, "
+    "for example 'I won the character with 62 pulls to spare', 'I lost my first run at "
+    "the character banner and I have 81 pulls left'. In that case still report the "
+    "event (banner and win/loss), leave pity_at_outcome null for it, and put the stated "
+    "figure in pulls_remaining_stated instead of trying to work out what the pity must "
+    "have been. If the question is a pure hypothetical or strategy question with no "
+    "actual event history, set has_event_sequence to false and events to an empty "
+    "list. Also report, only if explicitly stated: a direct restatement of pulls "
+    "remaining (pulls_remaining_stated, required whenever any event's pity is null), "
+    "an amount to add on top of whatever remains, not a total "
+    "(additional_pulls_stated), a restated total pull budget (total_pulls_restated), "
+    "and any extra copies wanted beyond the original goal "
+    "(additional_character_copies_wanted / additional_weapon_copies_wanted). Leave a "
+    "field null if the question does not state it."
 )
 
 RUN_SIMULATION_TOOL = {
@@ -146,6 +179,18 @@ def _condense(stats):
         "avg_leftover_pulls_on_success": stats["avg_leftover_pulls_on_success"],
         "most_common_failure_state": stats["most_common_failure_state"],
     }
+
+
+def _lines_to_text(lines):
+    """Flatten the structured pill lines into plain text for the
+    interpretation model's grounding context. The pills themselves (with
+    colors and tooltips) are what the UI renders; this is only so the model
+    has something readable to cite from."""
+    parts = []
+    for line in lines:
+        values = " ".join(str(p["value"]) for p in line["pills"])
+        parts.append(f"{line['label']}: {values}")
+    return "; ".join(parts)
 
 
 def _validate_strategy(strategy):
@@ -216,7 +261,7 @@ def _extract_session_state(client, model, question, baseline_stats, error_feedba
     try:
         return json.loads(response.choices[0].message.content or "{}")
     except json.JSONDecodeError:
-        return {"has_session_context": False}
+        return {"has_event_sequence": False}
 
 
 def _assistant_message(msg):
@@ -264,7 +309,7 @@ def _reconcile_session_state(client, model, question, baseline_params, baseline_
     the caller can tell the user reconciliation failed instead of quietly
     answering from the unadjusted baseline as if nothing had been stated."""
     extracted = _extract_session_state(client, model, question, baseline_stats)
-    if not extracted.get("has_session_context"):
+    if not extracted.get("has_event_sequence"):
         return {"applies": False}
 
     reconciled = reconcile(extracted, baseline_params, baseline_stats)
@@ -275,7 +320,7 @@ def _reconcile_session_state(client, model, question, baseline_params, baseline_
     extracted = _extract_session_state(
         client, model, question, baseline_stats, error_feedback=first_error,
     )
-    if not extracted.get("has_session_context"):
+    if not extracted.get("has_event_sequence"):
         return {"applies": True, "ok": False, "error": first_error}
 
     reconciled = reconcile(extracted, baseline_params, baseline_stats)
@@ -289,8 +334,11 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
 
     Returns (answer_text, runs, breakdown) where runs is the list of condensed
     simulation results the model actually ran (for the UI receipts), and
-    breakdown is the deterministic plain-language recap of any real-progress
-    state the question described (or None if it was a pure hypothetical)."""
+    breakdown is None (a pure hypothetical, no event sequence to show),
+    {"status": "ok", "lines": [...]} (the structured, deterministically-built
+    pill data for the UI), or {"status": "error", "message": "..."} (an event
+    sequence was described but could not be reconciled; see PARSE_FAILURE_MESSAGE
+    for the answer text in that case)."""
     client = OpenAI(api_key=get_openai_api_key())
     model = model or get_model()
 
@@ -310,13 +358,15 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
 
     reconciled = _reconcile_session_state(client, model, question, baseline_params, baseline_stats)
     if reconciled.get("applies") and reconciled.get("ok"):
-        breakdown = reconciled["breakdown"]
+        lines = reconciled["lines"]
+        lines_text = _lines_to_text(lines)
 
         if reconciled["goal_complete"] or reconciled["pulls_exhausted"]:
             # Nothing left to simulate, so answer directly from the verified state.
+            breakdown = {"status": "ok", "lines": lines}
             context = (
                 f"Verified session state (already reconciled from the question, treat as "
-                f"fact and do not restate it differently): {breakdown} "
+                f"fact and do not restate it differently): {lines_text} "
                 f"Original full goal was {goal_description} (goal {goal_label})."
             )
             messages = [
@@ -343,9 +393,11 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         # exists before the model's first turn can't be gotten wrong.
         primary_result = _condense(run_simulation_verbose(**run_params, trials=ADVISOR_TRIALS))
         runs.append(primary_result)
+        lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
+        breakdown = {"status": "ok", "lines": lines}
         context = (
             f"Verified session state (already reconciled from the question, treat as fact "
-            f"and do not restate it differently): {breakdown} "
+            f"and do not restate it differently): {lines_text} "
             f"Original full goal was {goal_description} (goal {goal_label}). "
             f"A simulation on this exact verified state has ALREADY been run for you: "
             f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
@@ -358,23 +410,14 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             f"figures in the question yourself."
         )
     elif reconciled.get("applies"):
-        # The question described real session progress, but it could not be
-        # reliably reconciled into a consistent pull count or goal even after
-        # a corrective retry. Say so plainly instead of quietly answering
-        # from the unadjusted baseline as if nothing had been stated.
-        breakdown = (
-            "Could not verify the pull progress described in this question "
-            "(the stated numbers did not add up consistently). Answering "
-            "from the original goal instead, so this may not reflect your "
-            "actual session."
-        )
-        context += (
-            " The question described session progress, but it could not be "
-            "reliably reconciled into a consistent pull count or goal. "
-            "Explicitly tell the user you could not verify their stated "
-            "progress and that this answer uses the original baseline goal "
-            "instead, so it may not reflect their actual session."
-        )
+        # The question described an event sequence, but it could not be
+        # reliably reconciled into a consistent pull count or goal even
+        # after a corrective retry. Decline entirely rather than guessing:
+        # a deterministic, hardcoded message, not another model call, since
+        # this is exactly the kind of instruction a model has repeatedly
+        # failed to follow reliably elsewhere in this app.
+        breakdown = {"status": "error", "message": "Could not parse a clear sequence of pull events from this question."}
+        return PARSE_FAILURE_MESSAGE, [], breakdown
 
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},

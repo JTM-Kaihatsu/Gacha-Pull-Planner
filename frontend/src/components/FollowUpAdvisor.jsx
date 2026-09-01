@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import { advise } from '../api'
 import { buildScenarioPayload, suggestedQuestions } from '../lib/scenarios'
+import ParsedSituation from './ParsedSituation'
 
 const MAX_QUESTION_LENGTH = 500
 
@@ -18,7 +19,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const suggestions = suggestedQuestions(confidence)
+  const suggestions = suggestedQuestions(confidence, baseline)
   const trimmed = question.trim()
   const canAsk = trimmed.length > 0 && !loading
 
@@ -97,12 +98,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
         {answer && (
           <div className="bg-slate-900/60 border border-slate-700 rounded-lg p-4">
             <div className="text-xs text-violet-400 uppercase tracking-wider mb-2">Advisor</div>
-            {breakdown && (
-              <div className="text-xs font-mono bg-slate-800 border border-slate-700 rounded px-2 py-1.5 text-slate-400 mb-3">
-                <span className="text-slate-500 uppercase tracking-wider mr-1">Parsed situation:</span>
-                {breakdown}
-              </div>
-            )}
+            <ParsedSituation breakdown={breakdown} />
             {runs.length > 0 && (
               <div className="flex flex-wrap gap-2 mb-3">
                 {runs.map((r, i) => (
