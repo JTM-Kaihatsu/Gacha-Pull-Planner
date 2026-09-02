@@ -1,5 +1,5 @@
 """Tests for session_state.py: pure functions, no mocking needed."""
-from session_state import TOOLTIPS, build_result_line, reconcile
+from session_state import TOOLTIPS, build_result_line, reconcile, remaining_goal_text
 
 BASELINE_PARAMS = {
     "total_pulls": 100,
@@ -90,6 +90,11 @@ def test_reproduces_the_original_bug_report_exactly():
     weapon_run_2 = next(l for l in result["lines"] if l["label"] == "Weapon Run 2 (obtained 0 of 1)")
     assert weapon_run_2["pills"][1]["value"] == "GUARANTEE: TRUE"
     assert weapon_run_2["pills"][1]["color"] == "green"
+
+    # 1 of the 2 wanted characters obtained, 0 of 1 weapons: 1 character and
+    # 1 weapon still actually remain, not the original 2 characters/1 weapon.
+    assert result["remaining_characters"] == 1
+    assert result["remaining_weapons"] == 1
 
 
 def test_unmentioned_banner_preserves_original_form_state():
@@ -195,6 +200,8 @@ def test_goal_already_complete_via_win_events():
     status = next(l for l in result["lines"] if l["label"] == "Goal Status")
     assert status["pills"][0]["value"] == "GOAL COMPLETE"
     assert status["pills"][0]["color"] == "green"
+    assert result["remaining_characters"] == 0
+    assert result["remaining_weapons"] == 0
 
 
 def test_pulls_exhausted_when_events_consume_everything():
@@ -209,6 +216,34 @@ def test_pulls_exhausted_when_events_consume_everything():
     status = next(l for l in result["lines"] if l["label"] == "Goal Status")
     assert status["pills"][0]["value"] == "NO PULLS REMAIN"
     assert status["pills"][0]["color"] == "red"
+    # The character was lost, not obtained, and the weapon was never
+    # mentioned: both are still fully wanted despite the budget running out.
+    assert result["remaining_characters"] == 1
+    assert result["remaining_weapons"] == 1
+
+
+def test_won_character_then_lost_weapon_leaves_only_weapon_remaining():
+    # The exact scenario from the live bug report: character won outright,
+    # weapon lost (guarantee active). Only the weapon should be reported as
+    # still remaining, the character must not show up as still needed.
+    events = [
+        _event(1, "character", "win", 30, 5),
+        _event(2, "weapon", "loss", 50, 3),
+    ]
+    result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is True
+    assert result["goal_complete"] is False
+    assert result["remaining_characters"] == 0
+    assert result["remaining_weapons"] == 1
+    assert {"banner": "char", "copies": 1} not in result["strategy"]
+    assert {"banner": "weapon", "copies": 1} in result["strategy"]
+
+
+def test_remaining_goal_text():
+    assert remaining_goal_text(0, 0) == "nothing, everything above is already obtained"
+    assert remaining_goal_text(1, 0) == "1 character"
+    assert remaining_goal_text(0, 1) == "1 weapon"
+    assert remaining_goal_text(2, 3) == "2 characters and 3 weapons"
 
 
 def test_build_result_line():

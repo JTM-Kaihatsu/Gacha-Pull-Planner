@@ -17,7 +17,7 @@ from openai import OpenAI
 
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
-from session_state import build_agent_cycle_line, build_result_line, reconcile
+from session_state import build_agent_cycle_line, build_result_line, reconcile, remaining_goal_text
 from simulation import run_simulation_verbose
 
 # Fewer trials than the main endpoint: the advisor may run several sims per
@@ -219,11 +219,20 @@ def _run_tool(args, baseline_params, lock_start_state=False):
 
     lock_start_state=True is used once a session's real pity/guarantee state
     has been verified by reconciliation: the model may still explore a
-    different total_pulls or copy count, but cannot override the actual
-    pity/guarantee it was just given, no matter what it passes. Prompt-only
-    instructions to the same effect were repeatedly not followed reliably;
-    this makes it structurally impossible instead of asking nicely."""
-    strategy = args.get("strategy") or baseline_params["strategy"]
+    different total_pulls, but cannot override the actual pity, guarantee,
+    or remaining copy counts it was just given, no matter what it passes.
+    Copy counts are locked alongside pity/guarantee because the "restated
+    goal" the model sees describes the whole session's goal (obtained plus
+    remaining), and a model exploring further was found live re-deriving a
+    copy count from that total rather than the already-reconciled remaining
+    amount, silently re-simulating a goal from scratch instead of the real
+    remaining one. Prompt-only instructions to the same effect were
+    repeatedly not followed reliably; this makes it structurally impossible
+    instead of asking nicely."""
+    if lock_start_state:
+        strategy = baseline_params["strategy"]
+    else:
+        strategy = args.get("strategy") or baseline_params["strategy"]
     error = _validate_strategy(strategy)
     if error:
         return {"error": error}
@@ -323,7 +332,10 @@ SYSTEM_PROMPT = (
     "weapon pity are independent of each other. Never assume a previous pity count "
     "carries forward into a new phase after a 5-star was already obtained on that "
     "banner, and never present that as an open question or a second, higher-odds "
-    "scenario: it is not a matter of interpretation. Never state a pull count, a "
+    "scenario: it is not a matter of interpretation. If the context states part of "
+    "the original goal is already obtained, treat only that part as done and describe "
+    "success or failure solely in terms of what still remains, never the original full "
+    "goal. Never state a pull count, a "
     "success rate, or any other simulation-derived number in your answer unless it "
     "came directly from a run_simulation result you actually received in this "
     "conversation; if a further scenario is worth mentioning, call the tool for it "
@@ -401,10 +413,15 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         if reconciled["goal_complete"] or reconciled["pulls_exhausted"]:
             # Nothing left to simulate, so answer directly from the verified state.
             breakdown = {"status": "ok", "lines": lines}
+            remaining = remaining_goal_text(reconciled["remaining_characters"], reconciled["remaining_weapons"])
             context = (
                 f"Verified session state (already reconciled from the question, treat as "
                 f"fact and do not restate it differently): {lines_text} "
-                f"Original full goal was {goal_description} (goal {goal_label})."
+                f"Original full goal was {goal_description} (goal {goal_label}), but what "
+                f"actually still remains to obtain, after the events above, is: {remaining}. "
+                f"Describe the outcome only in terms of what remains; anything not listed "
+                f"there is already obtained and must not be described as still needed, at "
+                f"risk, or a possible failure."
             )
             messages = [
                 {"role": "system", "content": SYSTEM_PROMPT},
@@ -435,10 +452,16 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         runs.append(primary_result)
         lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
         breakdown = {"status": "ok", "lines": lines}
+        remaining = remaining_goal_text(reconciled["remaining_characters"], reconciled["remaining_weapons"])
         context = (
             f"Verified session state (already reconciled from the question, treat as fact "
             f"and do not restate it differently): {lines_text} "
-            f"Original full goal was {goal_description} (goal {goal_label}). "
+            f"Original full goal was {goal_description} (goal {goal_label}), but what actually "
+            f"still remains to obtain, after the events above, is: {remaining}. The simulation "
+            f"below was run for exactly that remaining goal, not the original one; describe "
+            f"success and failure only in terms of what remains, anything not listed there is "
+            f"already obtained and must not be described as still needed, at risk, or a "
+            f"possible failure. "
             f"A simulation on this exact verified state has ALREADY been run for you: "
             f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
             f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
@@ -450,9 +473,11 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             f"further, different scenario, and if so derive any different total_pulls only by "
             f"adding to or subtracting from the {run_params['total_pulls']} figure above, never "
             f"by recomputing it from the raw figures in the question yourself. Any "
-            f"start_char_pity, start_char_guarantee, start_weapon_pity, or start_weapon_guarantee "
-            f"you pass on such a call is ignored: the verified state above is used regardless, "
-            f"so do not bother varying those."
+            f"start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee, or "
+            f"strategy (copy counts) you pass on such a call is ignored: the verified state and the "
+            f"remaining goal above ({remaining}) are used regardless, so do not bother varying those. "
+            f"'{remaining}' already accounts for everything obtained above; it is not a total to "
+            f"re-simulate from scratch."
         )
     elif reconciled.get("applies"):
         # The question described an event sequence, but it could not be

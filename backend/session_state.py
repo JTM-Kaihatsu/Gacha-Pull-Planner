@@ -282,6 +282,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
             "strategy": [], "total_pulls": total_pulls,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
+            "remaining_characters": 0, "remaining_weapons": 0,
             "lines": lines,
         }
 
@@ -294,6 +295,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
             "strategy": [], "total_pulls": 0,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
+            "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
             "lines": lines,
         }
 
@@ -350,6 +352,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
         "start_char_guarantee": start_char_guarantee,
         "start_weapon_pity": start_weapon_pity,
         "start_weapon_guarantee": start_weapon_guarantee,
+        "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
         "lines": lines,
     }
 
@@ -371,6 +374,20 @@ def _goal_text(baseline_stats, additional_chars, additional_weapons):
     if additional_chars or additional_weapons:
         return f"{_phrase(orig_chars, orig_weapons)} → {_phrase(new_chars, new_weapons)}"
     return _phrase(new_chars, new_weapons)
+
+
+def remaining_goal_text(remaining_characters, remaining_weapons):
+    """Plain-English phrase for what's actually still needed, built from
+    reconcile()'s remaining_characters/remaining_weapons. This is what the
+    advisor's interpretation model should be told the goal is, not the
+    original full goal: once a copy is obtained above, it must stop being
+    described as something that could still fail or still needs pulling."""
+    parts = []
+    if remaining_characters:
+        parts.append(f"{remaining_characters} character{'s' if remaining_characters != 1 else ''}")
+    if remaining_weapons:
+        parts.append(f"{remaining_weapons} weapon{'s' if remaining_weapons != 1 else ''}")
+    return " and ".join(parts) if parts else "nothing, everything above is already obtained"
 
 
 def build_result_line(total_pulls, success_rate):

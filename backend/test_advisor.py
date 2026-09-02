@@ -242,6 +242,29 @@ class TestSessionStateIntegration:
         assert seen_kwargs["start_weapon_guarantee"] is True
         assert answer == "With the guarantee your weapon odds are strong."
 
+    def test_context_states_only_the_remaining_goal_not_the_original(self, monkeypatch):
+        # Live bug report: the character was already won (guaranteed), but
+        # the interpretation model's prose still described the character as
+        # if it could still fail, because the context only ever told it the
+        # *original* combined goal. The context sent to the model must now
+        # spell out what actually still remains (the weapon only) and say
+        # so explicitly, not leave the model to infer it.
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+        events = [_event(1, "character", "win", 30, 5), _event(2, "weapon", "loss", 50, 3)]
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="Only the weapon is left, odds are decent.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        run_advisor(params, stats, "I won the character but lost the weapon, how's it looking?")
+
+        context = fake.calls[-1]["messages"][1]["content"]
+        assert "what actually still remains to obtain, after the events above, is: 1 weapon" in context
+        assert "must not be described as still needed, at risk, or a possible failure" in context
+
     def test_reconciled_scenario_is_simulated_before_the_model_gets_a_turn(self, monkeypatch):
         # Fourth real bug: even with explicit instructions, the model kept
         # re-deriving (and double-counting) the pull total itself. The fix
@@ -321,6 +344,8 @@ class TestSessionStateIntegration:
         assert runs == []                              # nothing was simulated
         assert answer == "You already have everything you need."
         assert fake.calls[-1]["tool_choice"] == "none"  # no tool offered for this path
+        context = fake.calls[-1]["messages"][1]["content"]
+        assert "nothing, everything above is already obtained" in context
 
     def test_expands_goal_and_adds_extra_pulls_on_top_of_remaining(self, monkeypatch):
         # Second real bug report: "another character copy" (goal expansion)
@@ -515,6 +540,26 @@ class TestToolExecutor:
         monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
         _run_tool({"start_weapon_pity": 53}, BASELINE_PARAMS, lock_start_state=False)
         assert seen_kwargs["start_weapon_pity"] == 53
+
+    def test_lock_start_state_also_ignores_model_supplied_strategy(self, monkeypatch):
+        # Live bug report: given a "restated goal" of e.g. 2 characters
+        # (1 obtained + 1 remaining), an exploratory call re-derived that as
+        # "2 fresh copies", re-simulating a goal from scratch instead of the
+        # already-reconciled remaining amount, and produced a contradictory,
+        # much lower number that the answer then treated as authoritative.
+        # Copy counts must be locked exactly like pity/guarantee.
+        seen_kwargs = {}
+
+        def _spy_sim(**kwargs):
+            seen_kwargs.update(kwargs)
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+        _run_tool(
+            {"strategy": [{"banner": "char", "copies": 2}, {"banner": "weapon", "copies": 1}]},
+            BASELINE_PARAMS, lock_start_state=True,
+        )
+        assert seen_kwargs["strategy"] == BASELINE_PARAMS["strategy"]
 
 
 class TestValidateStrategy:
