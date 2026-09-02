@@ -59,8 +59,8 @@ EVENT_SCHEMA = {
             "description": "Raw pulls spent on this banner to reach this outcome (the pity count). Null if the question did not give an exact pity/pull count for this specific event (e.g. 'I won with 62 to spare', 'I lost, and I have 81 pulls left'); in that case report pulls_remaining_stated instead so the true total can still be known.",
         },
         "refund_count": {
-            "type": "integer",
-            "description": "4-star refund pulls received back during this event, if stated (0 if none).",
+            "type": ["integer", "null"],
+            "description": "4-star refund pulls received back during this event, if explicitly stated (this includes an explicit '0'/'no refunds'). Null if the question simply does not mention refunds for this event at all; do not assume 0 in that case, a deterministic formula estimates it instead when applicable.",
         },
     },
     "required": ["event_order", "banner_type", "outcome", "pity_at_outcome", "refund_count"],
@@ -93,7 +93,7 @@ SESSION_STATE_SCHEMA = {
         },
         "pulls_remaining_stated": {
             "type": ["integer", "null"],
-            "description": "A direct, total restatement of pulls remaining (e.g. 'I have 41 pulls left'). Do not use this for an amount meant to be added on top of the remaining pulls; use additional_pulls_stated for that instead.",
+            "description": "A direct, total restatement of pulls remaining, ONLY when the question's own words state a specific leftover pull count as fact (e.g. 'I have 41 pulls left', 'I'm down to 23'). Never compute this yourself by subtracting a pity count (or anything else) from the total pulls; a question that only gives an event's pity and outcome, with no separate remaining-pulls statement, must leave this null, the true remaining total is computed deterministically from the events instead. Do not use this field for an amount meant to be added on top of the remaining pulls; use additional_pulls_stated for that instead.",
         },
         "additional_pulls_stated": {
             "type": ["integer", "null"],
@@ -122,15 +122,24 @@ EXTRACTION_SYSTEM_PROMPT = (
     "strategy. If the question describes one or more actual pulls that already "
     "happened (a banner pulled to a win or a loss), report each one as its own event: "
     "which banner, win or loss, and (if an exact number was given) the pity count at "
-    "that outcome and any 4-star refund received (0 if none stated). Number events "
-    "sequentially starting from 1 in the order they occurred; never combine two events "
+    "that outcome. For refund_count, report the exact number only if the question "
+    "actually states one for that event, including an explicit 'no refunds' (0); if "
+    "refunds simply are not mentioned for that event, leave refund_count null, do not "
+    "assume 0, a deterministic formula estimates it separately when applicable. Number "
+    "events sequentially starting from 1 in the order they occurred; never combine two events "
     "into one or sum their numbers together. Users often describe an outcome without "
     "giving its exact pity, instead stating how many pulls they have left afterward, "
     "for example 'I won the character with 62 pulls to spare', 'I lost my first run at "
     "the character banner and I have 81 pulls left'. In that case still report the "
     "event (banner and win/loss), leave pity_at_outcome null for it, and put the stated "
     "figure in pulls_remaining_stated instead of trying to work out what the pity must "
-    "have been. If the question is a pure hypothetical or strategy question with no "
+    "have been. This only runs in the other direction: when an event's pity IS known, "
+    "never invent a pulls_remaining_stated by subtracting that pity (or anything else) "
+    "from the total pulls yourself, even if the question ends on a vague phrase like "
+    "'with what's left' or 'from here'. pulls_remaining_stated must come only from the "
+    "question's own words stating a specific leftover number as fact; if it does not, "
+    "leave the field null and let the true remaining total be computed from the events. "
+    "If the question is a pure hypothetical or strategy question with no "
     "actual event history, set has_event_sequence to false and events to an empty "
     "list. Also report, only if explicitly stated: a direct restatement of pulls "
     "remaining (pulls_remaining_stated, required whenever any event's pity is null), "

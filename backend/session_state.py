@@ -19,6 +19,24 @@ this module reports an inconsistency (capped at one retry).
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
+# Refund estimation: applied only when the question doesn't state a refund
+# count for an event AND the baseline was simulated with "all 4-star
+# characters at max copies" checked, since that's the only condition under
+# which 4-star pulls reliably convert to refunds at all. Rates are the
+# empirical average refunds per pull spent on that banner under max-copy
+# refunding; the dupe bonus accounts for a 5-star win on a banner where the
+# featured item's first copy is already owned, since a repeat win itself
+# refunds a fixed amount on top of the per-pull rate.
+_REFUND_RATE = {"character": 0.1105, "weapon": 0.0578}
+DUPE_WIN_REFUND_BONUS = 2
+
+
+def _estimate_refunds(banner, outcome, pity, prior_copies):
+    estimate = _REFUND_RATE[banner] * pity
+    if outcome == "win" and prior_copies >= 1:
+        estimate += DUPE_WIN_REFUND_BONUS
+    return round(estimate)
+
 TOOLTIPS = {
     "start_pulls": "Starting number of pulls for run",
     "pity": "Number of pulls spent in this run",
@@ -71,9 +89,13 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
         # to the pulls ledger, so pulls_remaining_stated becomes required.
         if pity is not None and (not isinstance(pity, int) or not (0 <= pity <= hard_pity)):
             return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
-        if not isinstance(refunds, int) or refunds < 0:
+        # refund_count may be null: the question simply didn't mention
+        # refunds for this event. That's distinct from an explicit "no
+        # refunds" (0), and is later filled in by _estimate_refunds when
+        # applicable rather than assumed to be 0.
+        if refunds is not None and (not isinstance(refunds, int) or refunds < 0):
             return f"event_order {event['event_order']}: refund_count ({refunds}) cannot be negative"
-        if pity is not None and refunds > pity:
+        if pity is not None and refunds is not None and refunds > pity:
             return f"event_order {event['event_order']}: refund_count ({refunds}) exceeds pity_at_outcome ({pity})"
     return None
 
@@ -82,7 +104,7 @@ def _run_label(banner, run_number, obtained, desired):
     return f"{_BANNER_LABEL[banner]} Run {run_number} (obtained {obtained} of {desired})"
 
 
-def _process_events(events, running_pulls, desired_characters, desired_weapons):
+def _process_events(events, running_pulls, desired_characters, desired_weapons, full_4star_chars):
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
     weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
@@ -99,6 +121,7 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons):
         outcome = event["outcome"]
         pity = event["pity_at_outcome"]
         refunds = event["refund_count"]
+        prior_copies = counts[banner]  # before this event's own win, if any
 
         run_index[banner] += 1
 
@@ -123,6 +146,14 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons):
             })
             continue
 
+        estimated_refund = refunds is None
+        if estimated_refund:
+            # The question never mentioned refunds for this event. Only
+            # estimate when max-copy refunding was actually in effect for
+            # the baseline; otherwise there's no reliable basis for a
+            # nonzero figure, so it stays 0 exactly as before.
+            refunds = _estimate_refunds(banner, outcome, pity, prior_copies) if full_4star_chars else 0
+
         start_pulls = running_pulls
         running_pulls -= pity
         running_pulls += refunds
@@ -133,6 +164,18 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons):
                     any_unknown_pity,
                     f"event_order {event['event_order']}: pulls consumed exceed the stated total budget")
 
+        refund_pill = (
+            {
+                "kind": "number", "value": refunds, "color": "light_green",
+                "tooltip": (
+                    "A number of refunds wasn't given and all 4-stars are obtained, so a "
+                    f"formula estimating the average number of refunds for {pity} pulls has been used"
+                ),
+            }
+            if estimated_refund and full_4star_chars else
+            _pill("number", refunds, "cyan", "refund")
+        )
+
         lines.append({
             "label": label,
             "pills": [
@@ -140,7 +183,7 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons):
                 _pill("operator", "−", "magenta", "subtract_op"),
                 _pill("number", pity, "cyan", "pity"),
                 _pill("operator", "+", "magenta", "add_op"),
-                _pill("number", refunds, "cyan", "refund"),
+                refund_pill,
                 _pill("operator", "=", "magenta", "equals_op"),
                 _pill("result", running_pulls, "light_green", "run_result"),
                 _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),
@@ -195,7 +238,8 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
      char_events, weapon_events, running_pulls, any_unknown_pity,
-     error) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons)
+     error) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons,
+                               baseline_params["full_4star_chars"])
     if error:
         return {"applies": True, "ok": False, "error": error}
 
