@@ -8,7 +8,7 @@ from simulation import (
     banner_probability,
     simulate_combo_verbose,
     run_simulation_verbose,
-    _build_phase_labels,
+    _build_copy_labels,
 )
 
 
@@ -128,10 +128,10 @@ class TestSimulateCombo:
             char_pity_config=never_hit_config,
             weapon_pity_config=always_hit_config,
         )
-        phases = meta["phase_detail"]
-        assert [p["banner"] for p in phases] == ["char", "weapon"]
-        assert phases[0]["pulls_used"] == 20   # char phase eats the whole budget
-        assert phases[1]["pulls_used"] == 0    # nothing left for the weapon phase
+        copies = meta["copy_detail"]
+        assert [c["banner"] for c in copies] == ["char", "weapon"]
+        assert copies[0]["pulls_used"] == 20   # char phase eats the whole budget
+        assert copies[1]["pulls_used"] == 0    # nothing left for the weapon phase
         assert used == 20
 
     def test_sequential_phases_both_won(self, always_hit_config):
@@ -150,7 +150,43 @@ class TestSimulateCombo:
         assert success is True
         assert used == 2
         assert meta["chars_obtained"] == 1 and meta["weapons_obtained"] == 1
-        assert [p["pulls_used"] for p in meta["phase_detail"]] == [1, 1]
+        assert [c["pulls_used"] for c in meta["copy_detail"]] == [1, 1]
+
+    def test_multi_copy_phase_splits_into_one_entry_per_copy(self, always_hit_config):
+        # A 2-copy character phase used to collapse into one aggregated
+        # phase_detail entry ("C0-C1: N pulls combined"); it must now report
+        # each copy's own pulls separately. Only the first copy's 50/50 is
+        # guaranteed (the guarantee flag clears after a win), so only its
+        # pull count is deterministic; the second copy's isn't, but the
+        # split into two entries summing to the total used is.
+        _, used, _, _, meta = simulate_combo_verbose(
+            total_pulls=20,
+            strategy=[{"banner": "char", "copies": 2}],
+            start_char_guarantee=True,
+            char_pity_config=always_hit_config,
+        )
+        assert meta["chars_obtained"] == 2
+        copies = meta["copy_detail"]
+        assert [c["banner"] for c in copies] == ["char", "char"]
+        assert copies[0]["pulls_used"] == 1   # first copy's 50/50 was guaranteed
+        assert sum(c["pulls_used"] for c in copies) == used
+
+    def test_incomplete_run_pads_remaining_copies_with_zero(self, never_hit_config):
+        # 3 character copies wanted but only 5 pulls available and the
+        # banner never hits: the whole budget goes into the first copy
+        # attempt, and the 2nd/3rd copies (never reached) must still appear
+        # as zero-pull entries so every trial has the same number of
+        # per-copy columns for the chart, regardless of outcome.
+        _, used, _, _, meta = simulate_combo_verbose(
+            total_pulls=5,
+            strategy=[{"banner": "char", "copies": 3}],
+            simulate_4star=False,
+            char_pity_config=never_hit_config,
+        )
+        assert used == 5
+        copies = meta["copy_detail"]
+        assert len(copies) == 3
+        assert [c["pulls_used"] for c in copies] == [5, 0, 0]
 
     def test_lost_5050_failure_flag_false_when_no_5star(self, never_hit_config):
         _, _, _, _, meta = simulate_combo_verbose(
@@ -172,22 +208,24 @@ class TestSimulateCombo:
         assert isinstance(success, bool)
         assert isinstance(used, int)
         assert isinstance(refunded, float)
-        for key in ("chars_obtained", "weapons_obtained", "phase_detail",
+        for key in ("chars_obtained", "weapons_obtained", "copy_detail",
                     "desired_chars", "desired_weapons", "final_pity_char"):
             assert key in meta
 
 
 # ---------------------------------------------------------------------------
-# _build_phase_labels — pure, exact strings
+# _build_copy_labels — pure, exact strings
 # ---------------------------------------------------------------------------
-class TestPhaseLabels:
+class TestCopyLabels:
     def test_single_copies(self):
-        assert _build_phase_labels([{"banner": "char", "copies": 1}]) == ["C0"]
-        assert _build_phase_labels([{"banner": "weapon", "copies": 1}]) == ["W1"]
+        assert _build_copy_labels([{"banner": "char", "copies": 1}]) == ["C0"]
+        assert _build_copy_labels([{"banner": "weapon", "copies": 1}]) == ["W1"]
 
-    def test_multi_copy_ranges(self):
-        assert _build_phase_labels([{"banner": "char", "copies": 3}]) == ["C0–C2"]
-        assert _build_phase_labels([{"banner": "weapon", "copies": 3}]) == ["W1–W3"]
+    def test_multi_copy_phase_gets_one_label_per_copy(self):
+        # No more collapsed ranges ("C0-C2"): one label per individual copy,
+        # matching copy_detail now having one entry per copy.
+        assert _build_copy_labels([{"banner": "char", "copies": 3}]) == ["C0", "C1", "C2"]
+        assert _build_copy_labels([{"banner": "weapon", "copies": 3}]) == ["W1", "W2", "W3"]
 
     def test_mixed_ordered_strategy_increments(self):
         strategy = [
@@ -195,10 +233,10 @@ class TestPhaseLabels:
             {"banner": "weapon", "copies": 1},
             {"banner": "char", "copies": 1},
         ]
-        assert _build_phase_labels(strategy) == ["C0", "W1", "C1"]
+        assert _build_copy_labels(strategy) == ["C0", "W1", "C1"]
 
     def test_empty_strategy(self):
-        assert _build_phase_labels([]) == []
+        assert _build_copy_labels([]) == []
 
 
 # ---------------------------------------------------------------------------
@@ -243,12 +281,12 @@ class TestRunSimulation:
         )
         assert len(out["viz_sample"]) == VIZ_SAMPLE_SIZE
 
-    def test_viz_sample_labels_match_phase_labels(self):
+    def test_viz_sample_labels_match_copy_labels(self):
         strategy = [{"banner": "char", "copies": 1}, {"banner": "weapon", "copies": 1}]
         out = run_simulation_verbose(total_pulls=120, strategy=strategy, trials=50)
-        expected = _build_phase_labels(strategy)
+        expected = _build_copy_labels(strategy)
         for entry in out["viz_sample"]:
-            assert [p["label"] for p in entry["phases"]] == expected
+            assert [c["label"] for c in entry["copies"]] == expected
 
     def test_hundred_percent_success_has_no_failures(self, always_hit_config):
         out = run_simulation_verbose(
