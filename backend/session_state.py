@@ -49,11 +49,12 @@ TOOLTIPS = {
     "equals_op": "Equals: the result of the operations to the left",
     "guarantee": "Whether or not this run is guaranteed to get the character or weapon",
     "outcome": "Whether this run resulted in a win or a loss",
-    "goal": "The character and weapon copies being planned for, based on the original goal and anything added or already obtained",
+    "goal": "The character and weapon copies still being pursued from this point onward, based on the original goal, anything added or removed, and anything already obtained above",
     "simulated": "The actual simulated success rate using the pulls and goal above",
     "agent_cycle": "An additional scenario the AI chose to explore with a real simulation, beyond the primary answer above",
     "status": "The current state of your goal after the events above",
     "stated_remaining": "Pulls remaining as directly stated in your question, since not every event gave an exact pity count",
+    "banner_marker": "Which banner the guarantee flag to the right belongs to",
 }
 
 _BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
@@ -321,11 +322,12 @@ def reconcile(extracted, baseline_params, baseline_stats):
     chars_remaining = max(desired_characters - char_obtained, 0)
     weapons_remaining = max(desired_weapons - weapon_obtained, 0)
 
-    goal_pill_text = _goal_text(
-        baseline_stats["desired_characters"], baseline_stats["desired_weapons"],
-        desired_characters, desired_weapons,
-    )
-    goal_line = {"label": "Restated Goal", "pills": [_pill("goal", goal_pill_text, "default", "goal")]}
+    # What's still actually being pursued from here, not the original or
+    # adjusted TOTAL goal: once a copy is obtained above, it must drop out
+    # of this pill, the same rule already applied to the advisor's prose
+    # via remaining_goal_text elsewhere.
+    goal_pill_text = remaining_goal_text(chars_remaining, weapons_remaining)
+    goal_line = {"label": "Current Goal", "pills": [_pill("goal", goal_pill_text, "default", "goal")]}
 
     if chars_remaining == 0 and weapons_remaining == 0:
         lines.append(goal_line)
@@ -363,7 +365,28 @@ def reconcile(extracted, baseline_params, baseline_stats):
     start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
     start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
 
-    if chars_remaining >= 1:
+    if chars_remaining >= 1 and weapons_remaining >= 1:
+        # Both banners still need a run, but they draw from the SAME shared
+        # pull pool in sequence (see the strategy build below), not two
+        # independent pools. Showing separate "Run" lines that each claim
+        # the full total_pulls would wrongly imply twice the actual budget;
+        # one combined line makes the sharing explicit instead.
+        lines.append({
+            "label": (
+                f"Remaining Character (obtained {char_obtained} of {desired_characters}) "
+                f"and Weapon (obtained {weapon_obtained} of {desired_weapons}) Runs"
+            ),
+            "pills": [
+                _pill("number", total_pulls, "cyan", "start_pulls"),
+                _pill("banner", "CHARACTER", "default", "banner_marker"),
+                _pill("flag", "GUARANTEE: TRUE" if start_char_guarantee else "GUARANTEE: FALSE",
+                      "green" if start_char_guarantee else "red", "guarantee"),
+                _pill("banner", "WEAPON", "default", "banner_marker"),
+                _pill("flag", "GUARANTEE: TRUE" if start_weapon_guarantee else "GUARANTEE: FALSE",
+                      "green" if start_weapon_guarantee else "red", "guarantee"),
+            ],
+        })
+    elif chars_remaining >= 1:
         lines.append({
             "label": _run_label("character", char_events + 1, char_obtained, desired_characters),
             "pills": [
@@ -372,7 +395,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
                       "green" if start_char_guarantee else "red", "guarantee"),
             ],
         })
-    if weapons_remaining >= 1:
+    elif weapons_remaining >= 1:
         lines.append({
             "label": _run_label("weapon", weapon_events + 1, weapon_obtained, desired_weapons),
             "pills": [
@@ -409,24 +432,6 @@ def reconcile(extracted, baseline_params, baseline_stats):
         "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
         "lines": lines,
     }
-
-
-def _goal_text(orig_chars, orig_weapons, new_chars, new_weapons):
-    """orig/new are already the clamped, final desired counts reconcile()
-    is actually using, not the raw signed delta, so this can never disagree
-    with the reconciled state (e.g. show a negative count) no matter how
-    large a reduction the question asked for."""
-    def _phrase(chars, weapons):
-        parts = []
-        if chars:
-            parts.append(f"{chars} character{'s' if chars != 1 else ''}")
-        if weapons:
-            parts.append(f"{weapons} weapon{'s' if weapons != 1 else ''}")
-        return " and ".join(parts) if parts else "nothing"
-
-    if new_chars != orig_chars or new_weapons != orig_weapons:
-        return f"{_phrase(orig_chars, orig_weapons)} → {_phrase(new_chars, new_weapons)}"
-    return _phrase(new_chars, new_weapons)
 
 
 def remaining_goal_text(remaining_characters, remaining_weapons):

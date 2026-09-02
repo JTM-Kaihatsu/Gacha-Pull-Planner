@@ -440,8 +440,8 @@ class TestSessionStateIntegration:
         assert breakdown["status"] == "ok"
         additional_line = _find_line(breakdown, "Additional Pulls Mentioned")
         assert additional_line["pills"][-1]["value"] == 86
-        goal_line = _find_line(breakdown, "Restated Goal")
-        assert goal_line["pills"][0]["value"] == "1 character and 1 weapon → 2 characters and 1 weapon"
+        goal_line = _find_line(breakdown, "Current Goal")
+        assert goal_line["pills"][0]["value"] == "1 character and 1 weapon"
         assert seen_kwargs["total_pulls"] == 86
         # 1 more character copy wanted (the one already obtained is dropped),
         # plus the still-needed weapon.
