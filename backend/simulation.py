@@ -82,22 +82,22 @@ def simulate_combo_verbose(
     chars_obtained = 0
     weapons_obtained = 0
 
-    phase_detail = []  # per-phase breakdown for visualization
+    copy_detail = []  # per-copy breakdown for visualization
 
     # Execute each phase in order. Pity/guarantee state is shared, so pulling
     # Weapon between two char phases genuinely affects the budget for the next phase.
     for phase in strategy:
         banner = phase["banner"]
         copies_needed = phase["copies"]
-        copies_got = 0
-        phase_pulls = 0
-        phase_refunds = 0.0
+        copies_done = 0
+        copy_pulls = 0
+        copy_refunds = 0.0
 
-        while copies_got < copies_needed and remaining > 0:
+        while copies_done < copies_needed and remaining > 0:
             if banner == "char":
                 remaining -= 1
                 used_pulls += 1
-                phase_pulls += 1
+                copy_pulls += 1
                 pity_char += 1
                 pity_4star_char += 1
 
@@ -108,10 +108,18 @@ def simulate_combo_verbose(
                     char_50_50_encounters += 1
 
                     if guarantee_char or np.random.rand() < 0.5:
-                        copies_got += 1
                         chars_obtained += 1
                         guarantee_char = False
                         char_50_50_wins += 1
+                        # A copy is won: close out its segment here rather
+                        # than at the end of the phase, so a lost 50/50
+                        # followed by the eventual guaranteed win still
+                        # bundles into that same copy's pulls, but the next
+                        # copy (if any) starts a fresh segment.
+                        copies_done += 1
+                        copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
+                        copy_pulls = 0
+                        copy_refunds = 0.0
                     else:
                         guarantee_char = True
                     pity_char = 0
@@ -122,12 +130,12 @@ def simulate_combo_verbose(
                     if full_4star_chars:
                         remaining += 1
                         refunded_pulls += 1.0
-                        phase_refunds += 1.0
+                        copy_refunds += 1.0
 
             else:  # banner == "weapon"
                 remaining -= 1
                 used_pulls += 1
-                phase_pulls += 1
+                copy_pulls += 1
                 pity_weapon += 1
                 pity_4star_weapon += 1
 
@@ -138,10 +146,13 @@ def simulate_combo_verbose(
                     weapon_75_25_encounters += 1
 
                     if guarantee_weapon or np.random.rand() < 0.75:
-                        copies_got += 1
                         weapons_obtained += 1
                         guarantee_weapon = False
                         weapon_75_25_wins += 1
+                        copies_done += 1
+                        copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
+                        copy_pulls = 0
+                        copy_refunds = 0.0
                     else:
                         guarantee_weapon = True
                     pity_weapon = 0
@@ -151,14 +162,19 @@ def simulate_combo_verbose(
                     pity_4star_weapon = 0
                     remaining += 0.4
                     refunded_pulls += 0.4
-                    phase_refunds += 0.4
+                    copy_refunds += 0.4
 
-        phase_detail.append({
-            "banner": banner,
-            "copies": copies_needed,
-            "pulls_used": phase_pulls,
-            "refunds": round(phase_refunds, 2),
-        })
+        # Pad so every trial reports exactly `copies_needed` per-copy entries
+        # for this phase, in order, even when a run fails partway through a
+        # copy or never reaches a later one. The chart needs that same set of
+        # per-copy columns aligned across every sampled trial regardless of
+        # outcome; the first padded entry carries whatever partial pulls/
+        # refunds were accumulated when the budget ran out, the rest are 0.
+        while copies_done < copies_needed:
+            copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
+            copies_done += 1
+            copy_pulls = 0
+            copy_refunds = 0.0
 
     success = (chars_obtained >= desired_chars and weapons_obtained >= desired_weapons)
     pulls_leftover = remaining
@@ -183,7 +199,7 @@ def simulate_combo_verbose(
         "desired_weapons": desired_weapons,
         "chars_obtained": chars_obtained,
         "weapons_obtained": weapons_obtained,
-        "phase_detail": phase_detail,
+        "copy_detail": copy_detail,
     }
 
     return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
@@ -192,25 +208,25 @@ def simulate_combo_verbose(
 VIZ_SAMPLE_SIZE = 1000
 
 
-def _build_phase_labels(strategy):
-    """Returns a label per strategy phase: C0/C1/C2... for char, W1/W2... for weapon."""
+def _build_copy_labels(strategy):
+    """Returns one label per individual copy across the whole strategy, in
+    order: C0, C1, C2... for characters (0-indexed) and W1, W2, W3... for
+    weapons (1-indexed), matching the app's existing numbering elsewhere.
+    One label per copy, not per phase, since copy_detail now has one entry
+    per copy rather than one aggregated entry per strategy phase."""
     char_idx = 0
     weapon_idx = 0
     labels = []
     for phase in strategy:
         n = phase["copies"]
         if phase["banner"] == "char":
-            if n == 1:
+            for _ in range(n):
                 labels.append(f"C{char_idx}")
-            else:
-                labels.append(f"C{char_idx}–C{char_idx + n - 1}")
-            char_idx += n
+                char_idx += 1
         else:
-            if n == 1:
-                labels.append(f"W{weapon_idx + 1}")
-            else:
-                labels.append(f"W{weapon_idx + 1}–W{weapon_idx + n}")
-            weapon_idx += n
+            for _ in range(n):
+                weapon_idx += 1
+                labels.append(f"W{weapon_idx}")
     return labels
 
 
@@ -246,8 +262,8 @@ def run_simulation_verbose(
     fail_leftover = []
 
     metadata_logs = []
-    phase_labels = _build_phase_labels(strategy)
-    viz_reservoir = []  # reservoir sample of per-run phase detail
+    copy_labels = _build_copy_labels(strategy)
+    viz_reservoir = []  # reservoir sample of per-run copy detail
 
     for i in range(trials):
         success, used, refunded, leftover, meta = simulate_combo_verbose(
@@ -272,9 +288,9 @@ def run_simulation_verbose(
             "trial": i + 1,
             "success": success,
             "total_pulls_used": used,
-            "phases": [
-                {**pd_item, "label": phase_labels[j]}
-                for j, pd_item in enumerate(meta["phase_detail"])
+            "copies": [
+                {**cd_item, "label": copy_labels[j]}
+                for j, cd_item in enumerate(meta["copy_detail"])
             ],
         }
         if i < VIZ_SAMPLE_SIZE:

@@ -173,7 +173,7 @@ export default function App() {
             {stats.viz_sample?.length > 0 && (
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <span className="text-xs text-slate-400">Runs displayed: <span className="text-slate-200 font-medium">{sampleSize}</span></span>
+                  <span className="text-xs text-slate-400">Cycles displayed: <span className="text-slate-200 font-medium">{sampleSize}</span></span>
                   <input
                     type="range" min={100} max={1000} step={50}
                     value={sampleSize}
