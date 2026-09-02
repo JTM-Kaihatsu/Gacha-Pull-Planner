@@ -179,6 +179,49 @@ def test_requested_copies_exceeding_max_return_error():
     assert "exceed the max" in result["error"]
 
 
+def test_negative_delta_reduces_goal_below_original():
+    # "I'll skip the character entirely and just go for the weapon" after a
+    # loss: additional_character_copies_wanted is negative enough to zero
+    # out a 2-character goal. The weapon is untouched and still needed.
+    stats = {**BASELINE_STATS, "desired_characters": 2}
+    events = [_event(1, "character", "loss", 30, 0)]
+    extracted = _blank(events=events, additional_character_copies_wanted=-2, pulls_remaining_stated=70)
+    result = reconcile(extracted, BASELINE_PARAMS, stats)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 0
+    assert result["remaining_weapons"] == 1
+    assert {"banner": "char", "copies": 1} not in result["strategy"]
+    assert {"banner": "weapon", "copies": 1} in result["strategy"]
+    goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
+    assert goal_line["pills"][0]["value"] == "2 characters and 1 weapon → 1 weapon"
+
+
+def test_negative_delta_reducing_to_one_is_satisfied_by_the_first_copy():
+    # "I'll skip the second character copy": reduces a 2-character goal to
+    # 1, and the copy already won in this scenario satisfies that reduced
+    # target, the character goal is complete even though the original goal
+    # was 2.
+    stats = {**BASELINE_STATS, "desired_characters": 2}
+    events = [_event(1, "character", "win", 20, 0)]
+    extracted = _blank(events=events, additional_character_copies_wanted=-1, pulls_remaining_stated=80)
+    result = reconcile(extracted, BASELINE_PARAMS, stats)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 0
+    assert result["remaining_weapons"] == 1
+
+
+def test_negative_delta_floors_at_zero_not_negative():
+    # An over-large reduction must clamp at 0, not go negative and leak
+    # into the goal text or the ledger.
+    events = [_event(1, "character", "loss", 30, 0)]
+    extracted = _blank(events=events, additional_character_copies_wanted=-99, pulls_remaining_stated=70)
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 0
+    goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
+    assert "-" not in str(goal_line["pills"][0]["value"])
+
+
 def test_empty_events_with_has_event_sequence_true_returns_error():
     result = reconcile(_blank(events=[]), BASELINE_PARAMS, BASELINE_STATS)
     assert result["applies"] is True

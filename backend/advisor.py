@@ -98,11 +98,11 @@ _SCENARIO_FIELDS = {
     "total_pulls_restated": {"type": ["integer", "null"]},
     "additional_character_copies_wanted": {
         "type": ["integer", "null"],
-        "description": "Extra character copies wanted BEYOND the original goal (e.g. 'another character copy' = 1). Do not use this for the original goal itself, only for a stated expansion of it.",
+        "description": "A signed CHANGE in character copies wanted, relative to the original goal, not a new total. Positive for extra copies wanted BEYOND the original goal (e.g. 'another character copy' = 1). Negative to reduce the goal below its original count, for example the question decides to give up on further copies of that banner after a bad outcome (e.g. 'if I lose the 50/50, I'll skip the second character copy and only go for the weapon' = -1 for that scenario; giving up on the banner entirely = negative enough to cover every copy still wanted, e.g. -2 if 2 were still wanted). Do not use this for the original goal itself, only for a stated change to it.",
     },
     "additional_weapon_copies_wanted": {
         "type": ["integer", "null"],
-        "description": "Extra weapon copies wanted BEYOND the original goal, same rule as additional_character_copies_wanted.",
+        "description": "Same rule as additional_character_copies_wanted (a signed change, positive to add, negative to reduce below the original goal), for the weapon banner.",
     },
 }
 
@@ -201,9 +201,12 @@ EXTRACTION_SYSTEM_PROMPT = (
     "remaining (pulls_remaining_stated, required whenever any event's pity is null), "
     "an amount to add on top of whatever remains, not a total "
     "(additional_pulls_stated), a restated total pull budget (total_pulls_restated), "
-    "and any extra copies wanted beyond the original goal "
-    "(additional_character_copies_wanted / additional_weapon_copies_wanted). Leave a "
-    "field null if the question does not state it. Most questions describe a single path: "
+    "and any signed change to the copies wanted for a banner "
+    "(additional_character_copies_wanted / additional_weapon_copies_wanted): positive to "
+    "add copies beyond the original goal, negative to reduce the goal below its original "
+    "count, for example a scenario that gives up on further copies of a banner after a "
+    "bad outcome ('I'll skip the second character copy and only go for the weapon' = -1). "
+    "Leave a field null if the question does not state it. Most questions describe a single path: "
     "leave condition_label and additional_scenarios both null. Only when the question "
     "describes two or more mutually exclusive FUTURE scenarios hinging on the outcome of a "
     "pull that has not happened yet (e.g. 'if I win the character pull, I'll go for another "
