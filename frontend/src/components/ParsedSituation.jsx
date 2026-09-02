@@ -53,6 +53,22 @@ function Line({ line }) {
   )
 }
 
+// A branching question ('if I win... if I lose...') reconciles into two or
+// more independent scenarios sharing the same starting point; each gets its
+// own labeled, visually separate section rather than being interleaved into
+// one flat pill list, so the reader can tell at a glance which pills belong
+// to which branch.
+function Group({ group }) {
+  return (
+    <div className="mb-4 last:mb-0 rounded-lg border border-slate-700/70 bg-slate-950/30 px-3 py-3">
+      <div className="text-xs font-medium text-violet-300 mb-2.5">{group.label}</div>
+      {group.lines.map((line, i) => (
+        <Line key={i} line={line} />
+      ))}
+    </div>
+  )
+}
+
 export default function ParsedSituation({ breakdown }) {
   if (!breakdown) return null
 
@@ -68,9 +84,9 @@ export default function ParsedSituation({ breakdown }) {
   return (
     <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
       <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Parsed Situation</div>
-      {breakdown.lines.map((line, i) => (
-        <Line key={i} line={line} />
-      ))}
+      {breakdown.groups
+        ? breakdown.groups.map((group, i) => <Group key={i} group={group} />)
+        : breakdown.lines.map((line, i) => <Line key={i} line={line} />)}
     </div>
   )
 }

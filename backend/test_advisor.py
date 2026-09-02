@@ -5,7 +5,10 @@ import types
 import pytest
 
 import advisor
-from advisor import run_advisor, _run_tool, _validate_strategy, PARSE_FAILURE_MESSAGE
+from advisor import (
+    run_advisor, _run_tool, _validate_strategy, PARSE_FAILURE_MESSAGE,
+    _scenarios_from_extraction, MAX_SCENARIOS,
+)
 
 
 # --- fake OpenAI client that replays a queued list of responses -------------
@@ -78,6 +81,29 @@ def _extraction_response(**overrides):
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
     payload.update(overrides)
+    return _response(_msg(content=json.dumps(payload)))
+
+
+def _scenario_fields(**overrides):
+    """The fields shared by the primary scenario and every additional_scenarios
+    entry (session_state.py's _SCENARIO_FIELDS), defaulted like a question
+    that states nothing beyond its events."""
+    base = {
+        "events": [], "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "total_pulls_restated": None,
+        "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
+    }
+    base.update(overrides)
+    return base
+
+
+def _branching_extraction_response(primary_label, primary_overrides, additional_scenarios):
+    payload = {
+        "has_event_sequence": True,
+        "condition_label": primary_label,
+        "additional_scenarios": additional_scenarios,
+        **_scenario_fields(**primary_overrides),
+    }
     return _response(_msg(content=json.dumps(payload)))
 
 
@@ -188,7 +214,7 @@ def test_tool_call_budget_is_capped(monkeypatch):
         "Agent Run Cycle 1", "Agent Run Cycle 2", "Agent Run Cycle 3",
     ]
     assert len(fake.calls) == 5                       # extraction + 3 tool loops + 1 forced final
-    assert fake.calls[-1]["tool_choice"] == "none"    # final call forbids more tools
+    assert "tools" not in fake.calls[-1]              # final call offers no tool, so none can be called
     assert len(runs) == 3                             # each loop ran the tool once
 
 
@@ -370,7 +396,7 @@ class TestSessionStateIntegration:
         assert status_line["pills"][0]["color"] == "green"
         assert runs == []                              # nothing was simulated
         assert answer == "You already have everything you need."
-        assert fake.calls[-1]["tool_choice"] == "none"  # no tool offered for this path
+        assert "tools" not in fake.calls[-1]  # no tool offered for this path
         context = fake.calls[-1]["messages"][1]["content"]
         assert "nothing, everything above is already obtained" in context
 
@@ -521,6 +547,188 @@ class TestSessionStateIntegration:
         assert len(fake.calls) == 2
         for call in fake.calls:
             assert call["temperature"] == advisor.ADVISOR_TEMPERATURE
+
+
+class TestScenariosFromExtraction:
+    """Pure unit tests for the helper that flattens one extraction result
+    (primary scenario fields plus an optional additional_scenarios array)
+    into a list of scenario dicts, each shaped like reconcile()'s input."""
+
+    def test_no_additional_scenarios_returns_just_the_primary(self):
+        extracted = {
+            "condition_label": None, "additional_scenarios": None,
+            **_scenario_fields(events=[_event(1, "character", "win", 30, 5)]),
+        }
+        scenarios = _scenarios_from_extraction(extracted)
+        assert len(scenarios) == 1
+        assert scenarios[0]["has_event_sequence"] is True
+        assert scenarios[0]["condition_label"] is None
+        assert scenarios[0]["events"] == extracted["events"]
+
+    def test_additional_scenarios_are_appended_after_the_primary(self):
+        extracted = {
+            "condition_label": "If I win",
+            "additional_scenarios": [
+                {"condition_label": "If I lose", **_scenario_fields(events=[_event(1, "character", "loss", 75, 3)])},
+            ],
+            **_scenario_fields(events=[_event(1, "character", "win", 30, 5)]),
+        }
+        scenarios = _scenarios_from_extraction(extracted)
+        assert len(scenarios) == 2
+        assert scenarios[0]["condition_label"] == "If I win"
+        assert scenarios[1]["condition_label"] == "If I lose"
+        assert scenarios[1]["has_event_sequence"] is True
+        assert scenarios[1]["events"][0]["outcome"] == "loss"
+
+    def test_scenarios_are_capped_at_max_scenarios(self):
+        extras = [
+            {"condition_label": f"Branch {i}", **_scenario_fields()}
+            for i in range(MAX_SCENARIOS + 5)
+        ]
+        extracted = {
+            "condition_label": "Primary", "additional_scenarios": extras,
+            **_scenario_fields(),
+        }
+        scenarios = _scenarios_from_extraction(extracted)
+        assert len(scenarios) == MAX_SCENARIOS
+
+
+class TestBranchingScenarios:
+    """The question describes two or more mutually exclusive futures ('if I
+    win... if I lose...'), reconciled from the same starting point."""
+
+    def _fake_sim_by_pulls(self, **kwargs):
+        # Encode total_pulls into the rate so a test can tell which branch's
+        # simulation produced which number.
+        return {
+            "success_rate": f"{kwargs['total_pulls']}.00%",
+            "initial_pulls": kwargs["total_pulls"],
+            "desired_characters": 1,
+            "desired_weapons": 1,
+            "avg_leftover_pulls_on_success": 10,
+            "most_common_failure_state": None,
+        }
+
+    def test_two_branches_each_simulated_and_grouped_separately(self, monkeypatch):
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        fake = _FakeClient([
+            _branching_extraction_response(
+                "If I win the character pull around pity 30",
+                {"events": [_event(1, "character", "win", 30, 5)]},
+                [{
+                    "condition_label": "If I lose the character pull around pity 75",
+                    **_scenario_fields(events=[_event(1, "character", "loss", 75, 3)]),
+                }],
+            ),
+            _response(_msg(content="Win branch is strong, lose branch is a stretch.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", self._fake_sim_by_pulls)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "If I win the character pull around pity 30, what are my odds for the weapon? "
+            "If I lose around pity 75, what are my odds instead?",
+        )
+
+        assert answer == "Win branch is strong, lose branch is a stretch."
+        assert breakdown["status"] == "ok"
+        assert "groups" in breakdown and "lines" not in breakdown
+        labels = [g["label"] for g in breakdown["groups"]]
+        assert labels == [
+            "If I win the character pull around pity 30",
+            "If I lose the character pull around pity 75",
+        ]
+
+        # Win branch: 100 - 30 + 5 = 75 pulls remain, weapon only.
+        win_group = breakdown["groups"][0]
+        win_result = next(l for l in win_group["lines"] if l["label"] == "Simulated Result")
+        assert win_result["pills"][0]["value"] == "75 pulls → 75.00%"
+
+        # Lose branch: 100 - 75 + 3 = 28 pulls remain, character (guaranteed) + weapon.
+        lose_group = breakdown["groups"][1]
+        lose_result = next(l for l in lose_group["lines"] if l["label"] == "Simulated Result")
+        assert lose_result["pills"][0]["value"] == "28 pulls → 28.00%"
+
+        # Both branches were actually simulated deterministically, not left to the model.
+        assert len(runs) == 2
+        assert {r["total_pulls"] for r in runs} == {75, 28}
+
+        # Only 2 model calls total: the extraction, then one consolidated
+        # answer. No exploratory tool loop for a branching question.
+        assert len(fake.calls) == 2
+        assert "tools" not in fake.calls[-1]
+
+    def test_branch_that_is_already_complete_is_not_simulated(self, monkeypatch):
+        params = {**BASELINE_PARAMS, "total_pulls": 100}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        seen_calls = []
+
+        def _spy_sim(**kwargs):
+            seen_calls.append(kwargs["total_pulls"])
+            return self._fake_sim_by_pulls(**kwargs)
+
+        fake = _FakeClient([
+            _branching_extraction_response(
+                "If I win the character",
+                {"events": [_event(1, "character", "win", 20, 0), _event(2, "weapon", "win", 30, 0)]},
+                [{
+                    "condition_label": "If I lose the character",
+                    **_scenario_fields(events=[_event(1, "character", "loss", 90, 0)]),
+                }],
+            ),
+            _response(_msg(content="First branch is already done, second is rough.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "If I win everything on my first tries, am I done? If I lose the character, then what?",
+        )
+
+        win_group = breakdown["groups"][0]
+        status_line = next(l for l in win_group["lines"] if l["label"] == "Goal Status")
+        assert status_line["pills"][0]["value"] == "GOAL COMPLETE"
+        # No "Simulated Result" line for the already-complete branch.
+        assert not any(l["label"] == "Simulated Result" for l in win_group["lines"])
+
+        # Only the second (still-incomplete) branch was actually simulated:
+        # 100 - 90 + 0 refunds = 10 pulls remain for it.
+        assert seen_calls == [10]
+        assert len(runs) == 1
+
+    def test_scenario_failure_includes_its_label_in_the_error(self, monkeypatch):
+        # The second branch's pulls_remaining_stated conflicts with its own
+        # events; the label must be identifiable in the surfaced error so a
+        # multi-branch failure isn't ambiguous about which branch broke.
+        fake = _FakeClient([
+            _branching_extraction_response(
+                "If I win",
+                {"events": [_event(1, "character", "win", 20, 0)]},
+                [{
+                    "condition_label": "If I lose",
+                    **_scenario_fields(events=[_event(1, "character", "loss", 30, 0)], pulls_remaining_stated=999),
+                }],
+            ),
+            # Retry also fails the same way.
+            _branching_extraction_response(
+                "If I win",
+                {"events": [_event(1, "character", "win", 20, 0)]},
+                [{
+                    "condition_label": "If I lose",
+                    **_scenario_fields(events=[_event(1, "character", "loss", 30, 0)], pulls_remaining_stated=999),
+                }],
+            ),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+        answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "confusing branching question")
+
+        assert answer == PARSE_FAILURE_MESSAGE
+        assert breakdown["status"] == "error"
 
 
 class TestToolExecutor:

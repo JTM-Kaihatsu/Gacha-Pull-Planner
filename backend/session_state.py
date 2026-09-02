@@ -218,10 +218,17 @@ def reconcile(extracted, baseline_params, baseline_stats):
     if error:
         return {"applies": True, "ok": False, "error": error}
 
+    # additional_*_copies_wanted is a signed delta on the original goal, not
+    # a total: positive adds copies beyond it, negative reduces it (e.g. the
+    # user gives up on further copies of a banner after a bad outcome).
+    # Floored at 0, not at whatever's already obtained in this scenario,
+    # events processed further down already floor "remaining" at 0 on their
+    # own, so a reduction that dips below the obtained count still resolves
+    # correctly as "goal complete for that banner".
     additional_chars = extracted.get("additional_character_copies_wanted") or 0
     additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
-    desired_characters = baseline_stats["desired_characters"] + additional_chars
-    desired_weapons = baseline_stats["desired_weapons"] + additional_weapons
+    desired_characters = max(baseline_stats["desired_characters"] + additional_chars, 0)
+    desired_weapons = max(baseline_stats["desired_weapons"] + additional_weapons, 0)
 
     if desired_characters > MAX_CHARACTER_COPIES:
         return {"applies": True, "ok": False,
@@ -314,7 +321,10 @@ def reconcile(extracted, baseline_params, baseline_stats):
     chars_remaining = max(desired_characters - char_obtained, 0)
     weapons_remaining = max(desired_weapons - weapon_obtained, 0)
 
-    goal_pill_text = _goal_text(baseline_stats, additional_chars, additional_weapons)
+    goal_pill_text = _goal_text(
+        baseline_stats["desired_characters"], baseline_stats["desired_weapons"],
+        desired_characters, desired_weapons,
+    )
     goal_line = {"label": "Restated Goal", "pills": [_pill("goal", goal_pill_text, "default", "goal")]}
 
     if chars_remaining == 0 and weapons_remaining == 0:
@@ -401,12 +411,11 @@ def reconcile(extracted, baseline_params, baseline_stats):
     }
 
 
-def _goal_text(baseline_stats, additional_chars, additional_weapons):
-    orig_chars = baseline_stats["desired_characters"]
-    orig_weapons = baseline_stats["desired_weapons"]
-    new_chars = orig_chars + additional_chars
-    new_weapons = orig_weapons + additional_weapons
-
+def _goal_text(orig_chars, orig_weapons, new_chars, new_weapons):
+    """orig/new are already the clamped, final desired counts reconcile()
+    is actually using, not the raw signed delta, so this can never disagree
+    with the reconciled state (e.g. show a negative count) no matter how
+    large a reduction the question asked for."""
     def _phrase(chars, weapons):
         parts = []
         if chars:
@@ -415,7 +424,7 @@ def _goal_text(baseline_stats, additional_chars, additional_weapons):
             parts.append(f"{weapons} weapon{'s' if weapons != 1 else ''}")
         return " and ".join(parts) if parts else "nothing"
 
-    if additional_chars or additional_weapons:
+    if new_chars != orig_chars or new_weapons != orig_weapons:
         return f"{_phrase(orig_chars, orig_weapons)} → {_phrase(new_chars, new_weapons)}"
     return _phrase(new_chars, new_weapons)
 
