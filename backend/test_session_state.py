@@ -64,9 +64,10 @@ def test_reproduces_the_original_bug_report_exactly():
     assert "Character Run 1 (obtained 1 of 2)" in labels
     assert "Weapon Run 1 (obtained 0 of 1)" in labels
     assert "Additional Pulls Mentioned" in labels
-    assert "Character Run 2 (obtained 1 of 2)" in labels   # the current, in-progress attempt
-    assert "Weapon Run 2 (obtained 0 of 1)" in labels
-    assert "Restated Goal" in labels
+    # Both banners still need a run: one combined line, not two separate
+    # ones each wrongly implying its own independent pull budget.
+    assert "Remaining Character (obtained 1 of 2) and Weapon (obtained 0 of 1) Runs" in labels
+    assert "Current Goal" in labels
 
     char_run_1 = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 2)")
     values = [p["value"] for p in char_run_1["pills"]]
@@ -79,17 +80,22 @@ def test_reproduces_the_original_bug_report_exactly():
     assert weapon_run_1["pills"][-1]["color"] == "red"
     assert [p["value"] for p in weapon_run_1["pills"][:7]] == [69, "−", 31, "+", 3, "=", 41]
 
-    goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
-    assert goal_line["pills"][0]["value"] == "1 character and 1 weapon → 2 characters and 1 weapon"
+    # "Current Goal" reflects what's still actually needed (1 more of each),
+    # not the original or expanded total (2 characters and 1 weapon).
+    goal_line = next(l for l in result["lines"] if l["label"] == "Current Goal")
+    assert goal_line["pills"][0]["value"] == "1 character and 1 weapon"
 
-    char_run_2 = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 1 of 2)")
-    assert char_run_2["pills"][0]["value"] == 86
-    assert char_run_2["pills"][1]["value"] == "GUARANTEE: FALSE"
-    assert char_run_2["pills"][1]["color"] == "red"
-
-    weapon_run_2 = next(l for l in result["lines"] if l["label"] == "Weapon Run 2 (obtained 0 of 1)")
-    assert weapon_run_2["pills"][1]["value"] == "GUARANTEE: TRUE"
-    assert weapon_run_2["pills"][1]["color"] == "green"
+    remaining_line = next(
+        l for l in result["lines"]
+        if l["label"] == "Remaining Character (obtained 1 of 2) and Weapon (obtained 0 of 1) Runs"
+    )
+    assert remaining_line["pills"][0]["value"] == 86           # shared starting pool, shown once
+    assert remaining_line["pills"][1]["value"] == "CHARACTER"
+    assert remaining_line["pills"][2]["value"] == "GUARANTEE: FALSE"
+    assert remaining_line["pills"][2]["color"] == "red"
+    assert remaining_line["pills"][3]["value"] == "WEAPON"
+    assert remaining_line["pills"][4]["value"] == "GUARANTEE: TRUE"
+    assert remaining_line["pills"][4]["color"] == "green"
 
     # 1 of the 2 wanted characters obtained, 0 of 1 weapons: 1 character and
     # 1 weapon still actually remain, not the original 2 characters/1 weapon.
@@ -107,6 +113,47 @@ def test_unmentioned_banner_preserves_original_form_state():
     assert result["ok"] is True
     assert result["start_weapon_pity"] == 37
     assert result["start_weapon_guarantee"] is True
+
+
+def test_both_banners_remaining_merge_into_one_shared_pool_line():
+    # Both the character and weapon goals are still open after this event:
+    # they draw from the same remaining pull pool in sequence, so this must
+    # be one combined line, not two lines each wrongly implying its own
+    # independent total_pulls budget.
+    stats = {**BASELINE_STATS, "desired_characters": 2}
+    events = [_event(1, "character", "win", 20, 0)]
+    extracted = _blank(events=events, pulls_remaining_stated=80)
+    result = reconcile(extracted, BASELINE_PARAMS, stats)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 1
+    assert result["remaining_weapons"] == 1
+
+    labels = [l["label"] for l in result["lines"]]
+    assert "Remaining Character (obtained 1 of 2) and Weapon (obtained 0 of 1) Runs" in labels
+    assert not any(l.startswith("Character Run 2") or l == "Weapon Run 1 (obtained 0 of 1)" for l in labels)
+
+    line = next(l for l in result["lines"]
+                if l["label"] == "Remaining Character (obtained 1 of 2) and Weapon (obtained 0 of 1) Runs")
+    assert [p["value"] for p in line["pills"]] == [
+        80, "CHARACTER", "GUARANTEE: FALSE", "WEAPON", "GUARANTEE: FALSE",
+    ]
+    assert line["pills"][2]["color"] == "red"    # character: won, no guarantee
+    assert line["pills"][4]["color"] == "red"    # weapon: never mentioned, baseline default False
+
+
+def test_only_one_banner_remaining_keeps_the_single_run_label():
+    # Only the weapon is still needed (character goal already met): no
+    # sharing ambiguity with just one banner left, so this stays the plain
+    # single-banner "Run" line, unmerged.
+    events = [_event(1, "character", "win", 20, 0)]
+    extracted = _blank(events=events, pulls_remaining_stated=80)
+    result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 0
+    assert result["remaining_weapons"] == 1
+    labels = [l["label"] for l in result["lines"]]
+    assert "Weapon Run 1 (obtained 0 of 1)" in labels
+    assert not any("Remaining" in l for l in labels)
 
 
 def test_multiple_losses_before_a_win_on_the_same_banner():
@@ -192,8 +239,8 @@ def test_negative_delta_reduces_goal_below_original():
     assert result["remaining_weapons"] == 1
     assert {"banner": "char", "copies": 1} not in result["strategy"]
     assert {"banner": "weapon", "copies": 1} in result["strategy"]
-    goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
-    assert goal_line["pills"][0]["value"] == "2 characters and 1 weapon → 1 weapon"
+    goal_line = next(l for l in result["lines"] if l["label"] == "Current Goal")
+    assert goal_line["pills"][0]["value"] == "1 weapon"
 
 
 def test_negative_delta_reducing_to_one_is_satisfied_by_the_first_copy():
@@ -218,7 +265,7 @@ def test_negative_delta_floors_at_zero_not_negative():
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is True
     assert result["remaining_characters"] == 0
-    goal_line = next(l for l in result["lines"] if l["label"] == "Restated Goal")
+    goal_line = next(l for l in result["lines"] if l["label"] == "Current Goal")
     assert "-" not in str(goal_line["pills"][0]["value"])
 
 
@@ -237,7 +284,7 @@ def test_goal_already_complete_via_win_events():
     assert result["goal_complete"] is True
     assert result["strategy"] == []
     labels = [line["label"] for line in result["lines"]]
-    assert "Restated Goal" in labels
+    assert "Current Goal" in labels
     # no in-progress "current run" lines once the goal is complete
     assert not any("Run 2" in label for label in labels)
     status = next(l for l in result["lines"] if l["label"] == "Goal Status")
