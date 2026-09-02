@@ -301,6 +301,33 @@ class TestSessionStateIntegration:
         result_line = _find_line(breakdown, "Simulated Result")
         assert result_line["pills"][0]["value"] == "41 pulls → 80.00%"
 
+    def test_unstated_refund_is_estimated_end_to_end_when_full_4star_chars(self, monkeypatch):
+        # The question never mentions refunds at all; the extraction must
+        # report refund_count null (not assume 0), and session_state.py's
+        # formula fills it in since the baseline was simulated with
+        # full_4star_chars=True.
+        params = {**BASELINE_PARAMS, "total_pulls": 100, "full_4star_chars": True}
+        stats = {**BASELINE_STATS, "initial_pulls": 100}
+
+        events = [_event(1, "character", "win", 30, None)]
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="Odds are decent from here.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        _, _, breakdown = run_advisor(
+            params, stats, "I won the character at 30 pity, how am I looking?",
+        )
+
+        char_line = _find_line(breakdown, "Character Run 1 (obtained 1 of 1)")
+        refund_pill = char_line["pills"][4]
+        # 0.1105 * 30 = 3.315 -> rounds to 3
+        assert refund_pill["value"] == 3
+        assert refund_pill["color"] == "light_green"
+        assert "formula estimating the average number of refunds for 30 pulls" in refund_pill["tooltip"]
+
     def test_unreconcilable_sequence_declines_with_a_hardcoded_message(self, monkeypatch):
         # Per the follow-up requirement: when the event sequence still can't
         # be reconciled after one corrective retry, decline entirely and ask

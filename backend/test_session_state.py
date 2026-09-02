@@ -1,5 +1,5 @@
 """Tests for session_state.py: pure functions, no mocking needed."""
-from session_state import TOOLTIPS, build_result_line, reconcile, remaining_goal_text
+from session_state import TOOLTIPS, build_result_line, reconcile, remaining_goal_text, _estimate_refunds
 
 BASELINE_PARAMS = {
     "total_pulls": 100,
@@ -333,3 +333,83 @@ class TestUnstatedPity:
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         assert result["total_pulls"] == 82
+
+
+class TestEstimateRefunds:
+    def test_character_formula(self):
+        # 0.1105 * 30 = 3.315 -> rounds to 3
+        assert _estimate_refunds("character", "loss", 30, prior_copies=0) == 3
+
+    def test_weapon_formula(self):
+        # 0.0578 * 50 = 2.89 -> rounds to 3
+        assert _estimate_refunds("weapon", "loss", 50, prior_copies=0) == 3
+
+    def test_dupe_win_adds_bonus(self):
+        # A win when a copy of that banner's featured item is already owned
+        # adds the +2 dupe bonus on top of the per-pull formula.
+        # 0.1105 * 30 = 3.315 -> 3, plus the +2 bonus = 5
+        assert _estimate_refunds("character", "win", 30, prior_copies=1) == 5
+
+    def test_dupe_bonus_only_applies_to_wins(self):
+        # A loss never obtains a 5-star, so no dupe applies regardless of
+        # how many copies were already owned.
+        assert _estimate_refunds("character", "loss", 30, prior_copies=1) == 3
+
+    def test_first_copy_win_gets_no_dupe_bonus(self):
+        # prior_copies == 0: this win is for the first copy, not a repeat.
+        assert _estimate_refunds("character", "win", 30, prior_copies=0) == 3
+
+
+class TestRefundEstimationInReconcile:
+    def test_unstated_refund_with_full_4star_chars_is_estimated_and_flagged(self):
+        events = [_event(1, "character", "win", 30, None)]
+        result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
+        refund_pill = char_line["pills"][4]
+        # 0.1105 * 30 = 3.315 -> 3
+        assert refund_pill["value"] == 3
+        assert refund_pill["color"] == "light_green"   # matches the "calculated" result styling
+        assert "formula estimating the average number of refunds for 30 pulls" in refund_pill["tooltip"]
+        # The ledger itself used the estimated figure: 100 - 30 + 3 = 73
+        assert char_line["pills"][6]["value"] == 73
+
+    def test_unstated_refund_without_full_4star_chars_defaults_to_zero(self):
+        params = {**BASELINE_PARAMS, "full_4star_chars": False}
+        events = [_event(1, "character", "win", 30, None)]
+        result = reconcile(_blank(events=events), params, BASELINE_STATS)
+        assert result["ok"] is True
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
+        refund_pill = char_line["pills"][4]
+        assert refund_pill["value"] == 0
+        assert refund_pill["color"] == "cyan"   # not flagged as estimated, same as an explicit 0
+        assert refund_pill["tooltip"] == TOOLTIPS["refund"]
+
+    def test_explicit_zero_refund_is_not_treated_as_estimated(self):
+        # An explicit 0 is a stated fact, not an absence of information;
+        # it must render exactly like any other stated refund count.
+        events = [_event(1, "character", "win", 30, 0)]
+        result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
+        refund_pill = char_line["pills"][4]
+        assert refund_pill["value"] == 0
+        assert refund_pill["color"] == "cyan"
+        assert refund_pill["tooltip"] == TOOLTIPS["refund"]
+
+    def test_second_copy_win_with_unstated_refund_gets_dupe_bonus(self):
+        # First copy stated explicitly (0 refunds), second copy's refund
+        # unstated: the estimate for the second event must include the +2
+        # dupe bonus since a copy of this banner was already obtained.
+        events = [
+            _event(1, "character", "win", 20, 0),
+            _event(2, "character", "win", 30, None),
+        ]
+        extracted = _blank(events=events, additional_character_copies_wanted=1)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        second_line = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 2 of 2)")
+        refund_pill = second_line["pills"][4]
+        # 0.1105 * 30 = 3.315 -> 3, plus the +2 dupe bonus = 5
+        assert refund_pill["value"] == 5
+        assert refund_pill["color"] == "light_green"
