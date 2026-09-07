@@ -60,14 +60,18 @@ EVENT_SCHEMA = {
         "outcome": {"type": "string", "enum": ["win", "loss"]},
         "pity_at_outcome": {
             "type": ["integer", "null"],
-            "description": "Raw pulls spent on this banner to reach this outcome (the pity count). Null if the question did not give an exact pity/pull count for this specific event (e.g. 'I won with 62 to spare', 'I lost, and I have 81 pulls left'); in that case report pulls_remaining_stated instead so the true total can still be known.",
+            "description": "The number the question gives for this outcome: either the absolute pity COUNTER value ('at 30 pity', 'reached pity 75') or a count of pulls spent in this specific run ('after 50 pulls', 'used 42 pulls'), see pity_is_absolute for which. Null if the question did not give an exact pity/pull count for this specific event (e.g. 'I won with 62 to spare', 'I lost, and I have 81 pulls left'); in that case report pulls_remaining_stated instead so the true total can still be known.",
+        },
+        "pity_is_absolute": {
+            "type": "boolean",
+            "description": "true if pity_at_outcome is the absolute pity COUNTER value, phrasing like 'at 30 pity' or 'reached pity 75'. false if pity_at_outcome is instead a count of pulls spent in this run, phrasing like 'after 50 pulls', 'used 42 pulls', 'spent 30 pulls'. This only matters when the banner already had pity carried over from before this conversation (see the Starting Situation context); it's ignored otherwise, and ignored when pity_at_outcome is null, set it to true in either of those cases if unsure.",
         },
         "refund_count": {
             "type": ["integer", "null"],
             "description": "4-star refund pulls received back during this event, if explicitly stated (this includes an explicit '0'/'no refunds'). Null if the question simply does not mention refunds for this event at all; do not assume 0 in that case, a deterministic formula estimates it instead when applicable.",
         },
     },
-    "required": ["event_order", "banner_type", "outcome", "pity_at_outcome", "refund_count"],
+    "required": ["event_order", "banner_type", "outcome", "pity_at_outcome", "pity_is_absolute", "refund_count"],
     "additionalProperties": False,
 }
 
@@ -176,8 +180,14 @@ EXTRACTION_SYSTEM_PROMPT = (
     "actual pulls that already happened, OR a specific hypothetical the question itself "
     "poses as an outcome to test (e.g. 'if I win the character pull around pity 30...'), "
     "report each one as its own event: "
-    "which banner, win or loss, and (if an exact number was given) the pity count at "
-    "that outcome. For refund_count, report the exact number only if the question "
+    "which banner, win or loss, and (if an exact number was given) the number stated for "
+    "that outcome. That number is stated in one of two genuinely different ways, and "
+    "pity_is_absolute records which: 'at 30 pity' or 'reached pity 75' states the absolute "
+    "pity COUNTER value, pity_is_absolute is true; 'after 50 pulls', 'used 42 pulls', 'spent "
+    "30 pulls' states a count of pulls spent in this specific run instead, pity_is_absolute "
+    "is false. Getting this backwards silently produces the wrong pull count whenever the "
+    "banner already had pity going into this conversation, so read the phrasing carefully "
+    "rather than defaulting to one. For refund_count, report the exact number only if the question "
     "actually states one for that event, including an explicit 'no refunds' (0); if "
     "refunds simply are not mentioned for that event, leave refund_count null, do not "
     "assume 0, a deterministic formula estimates it separately when applicable. Number "
