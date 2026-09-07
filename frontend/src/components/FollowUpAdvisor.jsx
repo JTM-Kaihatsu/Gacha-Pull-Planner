@@ -125,7 +125,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
                 further exploration) is already represented inside breakdown.lines
                 as its own labeled pill line ("Simulated Result" / "Agent Run
                 Cycle N"), so there is no separate receipt-chip list here. */}
-            <ParsedSituation breakdown={breakdown} />
+            <ParsedSituation breakdown={breakdown} baseline={baseline} />
             <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{answer}</p>
           </div>
         )}

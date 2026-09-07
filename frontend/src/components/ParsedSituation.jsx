@@ -69,24 +69,71 @@ function Group({ group }) {
   )
 }
 
-export default function ParsedSituation({ breakdown }) {
-  if (!breakdown) return null
+// The exact form inputs that produced the baseline simulation, shown as one
+// pill line above the parsed/reconciled content, so a reader can see the
+// starting point the rest of the panel is reasoning from without scrolling
+// back up to the form itself.
+function StartingSituation({ baseline }) {
+  const f = baseline.form
+  const pills = [
+    { kind: 'number', value: f.total_pulls, color: 'cyan',
+      tooltip: 'Total pulls available at the start of this simulation' },
+    { kind: 'banner', value: 'CHARACTER', color: 'default',
+      tooltip: 'Which banner the pity and guarantee to the right belong to' },
+    { kind: 'number', value: f.start_char_pity, color: 'cyan',
+      tooltip: "Character banner's starting pity" },
+    { kind: 'flag', value: f.start_char_guarantee ? 'GUARANTEE: TRUE' : 'GUARANTEE: FALSE',
+      color: f.start_char_guarantee ? 'green' : 'red',
+      tooltip: 'Whether the character banner starts with a guaranteed next 5-star' },
+    { kind: 'banner', value: 'WEAPON', color: 'default',
+      tooltip: 'Which banner the pity and guarantee to the right belong to' },
+    { kind: 'number', value: f.start_weapon_pity, color: 'cyan',
+      tooltip: "Weapon banner's starting pity" },
+    { kind: 'flag', value: f.start_weapon_guarantee ? 'GUARANTEE: TRUE' : 'GUARANTEE: FALSE',
+      color: f.start_weapon_guarantee ? 'green' : 'red',
+      tooltip: 'Whether the weapon banner starts with a guaranteed next 5-star' },
+  ]
+  return (
+    <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
+      <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Starting Situation</div>
+      {/* No per-line label here (unlike Line elsewhere in this file): the
+          panel header above already says what this row is, a repeated
+          "STARTING SITUATION" sub-label would be pure duplication. */}
+      <div className="flex flex-wrap items-center gap-1.5">
+        {pills.map((pill, i) => (
+          <Pill key={i} pill={pill} />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+export default function ParsedSituation({ breakdown, baseline }) {
+  const startingSituation = baseline && <StartingSituation baseline={baseline} />
+
+  if (!breakdown) return startingSituation || null
 
   if (breakdown.status === 'error') {
     return (
-      <div className="bg-red-950/30 border border-red-800/50 rounded-lg px-3 py-2 mb-3">
-        <div className="text-[11px] text-red-400 uppercase tracking-wider mb-1">Parsed Situation</div>
-        <p className="text-xs text-red-300">{breakdown.message}</p>
-      </div>
+      <>
+        {startingSituation}
+        <div className="bg-red-950/30 border border-red-800/50 rounded-lg px-3 py-2 mb-3">
+          <div className="text-[11px] text-red-400 uppercase tracking-wider mb-1">Parsed Situation</div>
+          <p className="text-xs text-red-300">{breakdown.message}</p>
+        </div>
+      </>
     )
   }
 
   return (
-    <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
-      <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Parsed Situation</div>
-      {breakdown.groups
-        ? breakdown.groups.map((group, i) => <Group key={i} group={group} />)
-        : breakdown.lines.map((line, i) => <Line key={i} line={line} />)}
-    </div>
+    <>
+      {startingSituation}
+      <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
+        <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Parsed Situation</div>
+        {breakdown.groups
+          ? breakdown.groups.map((group, i) => <Group key={i} group={group} />)
+          : breakdown.lines.map((line, i) => <Line key={i} line={line} />)}
+      </div>
+    </>
   )
 }
