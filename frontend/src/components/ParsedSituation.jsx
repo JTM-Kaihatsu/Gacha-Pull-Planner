@@ -69,39 +69,51 @@ function Group({ group }) {
   )
 }
 
-// The exact form inputs that produced the baseline simulation, shown as one
-// pill line above the parsed/reconciled content, so a reader can see the
-// starting point the rest of the panel is reasoning from without scrolling
-// back up to the form itself.
+// The exact form inputs that produced the baseline simulation, shown above
+// the parsed/reconciled content so a reader can see the starting point the
+// rest of the panel reasons from without scrolling back to the form. The
+// pill text here is deliberately spelled out in full ("180 starting pulls",
+// "20 pity", "GUARANTEE: FALSE") rather than bare numbers: this panel
+// doubles as the reader's legend for the terser pills further down.
 function StartingSituation({ baseline }) {
   const f = baseline.form
-  const pills = [
-    { kind: 'number', value: f.total_pulls, color: 'cyan',
-      tooltip: 'Total pulls available at the start of this simulation' },
-    { kind: 'banner', value: 'CHARACTER', color: 'default',
-      tooltip: 'Which banner the pity and guarantee to the right belong to' },
-    { kind: 'number', value: f.start_char_pity, color: 'cyan',
-      tooltip: "Character banner's starting pity" },
-    { kind: 'flag', value: f.start_char_guarantee ? 'GUARANTEE: TRUE' : 'GUARANTEE: FALSE',
-      color: f.start_char_guarantee ? 'green' : 'red',
-      tooltip: 'Whether the character banner starts with a guaranteed next 5-star' },
-    { kind: 'banner', value: 'WEAPON', color: 'default',
-      tooltip: 'Which banner the pity and guarantee to the right belong to' },
-    { kind: 'number', value: f.start_weapon_pity, color: 'cyan',
-      tooltip: "Weapon banner's starting pity" },
-    { kind: 'flag', value: f.start_weapon_guarantee ? 'GUARANTEE: TRUE' : 'GUARANTEE: FALSE',
-      color: f.start_weapon_guarantee ? 'green' : 'red',
-      tooltip: 'Whether the weapon banner starts with a guaranteed next 5-star' },
+  const chars = baseline.desiredChars ?? 0
+  const weapons = baseline.desiredWeapons ?? 0
+  const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`
+
+  const bannerRow = (name, pity, guaranteed) => [
+    { kind: 'banner', value: name, color: 'default',
+      tooltip: `The pity and guarantee on this row are for the ${name.toLowerCase()} banner` },
+    { kind: 'number', value: `${pity} pity`, color: 'cyan',
+      tooltip: `Pity already built up on the ${name.toLowerCase()} banner at the start` },
+    { kind: 'flag', value: `GUARANTEE: ${guaranteed ? 'TRUE' : 'FALSE'}`,
+      color: guaranteed ? 'green' : 'red',
+      tooltip: `Whether the ${name.toLowerCase()} banner starts with a guaranteed next 5-star` },
   ]
+
+  const rows = [
+    [
+      { kind: 'number', value: `${f.total_pulls} starting pulls`, color: 'cyan',
+        tooltip: 'Total pulls available at the start of this simulation' },
+      { kind: 'number', value: `${plural(chars, 'character')} desired`, color: 'cyan',
+        tooltip: 'Copies of the character this simulation was aiming for' },
+      { kind: 'number', value: `${plural(weapons, 'weapon')} desired`, color: 'cyan',
+        tooltip: 'Copies of the weapon this simulation was aiming for' },
+    ],
+    bannerRow('CHARACTER', f.start_char_pity, f.start_char_guarantee),
+    bannerRow('WEAPON', f.start_weapon_pity, f.start_weapon_guarantee),
+  ]
+
   return (
     <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
       <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Starting Situation</div>
-      {/* No per-line label here (unlike Line elsewhere in this file): the
-          panel header above already says what this row is, a repeated
-          "STARTING SITUATION" sub-label would be pure duplication. */}
-      <div className="flex flex-wrap items-center gap-1.5">
-        {pills.map((pill, i) => (
-          <Pill key={i} pill={pill} />
+      <div className="space-y-1.5">
+        {rows.map((pills, ri) => (
+          <div key={ri} className="flex flex-wrap items-center gap-1.5">
+            {pills.map((pill, i) => (
+              <Pill key={i} pill={pill} />
+            ))}
+          </div>
         ))}
       </div>
     </div>
