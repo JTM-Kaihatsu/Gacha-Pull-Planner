@@ -105,6 +105,74 @@ def _run_label(banner, run_number, obtained, desired):
     return f"{_BANNER_LABEL[banner]} Run {run_number} (obtained {obtained} of {desired})"
 
 
+def _normalize_pity_carryover(events, baseline_params):
+    """Reconcile each banner's FIRST event against whatever pity/guarantee
+    that banner already had before this conversation (the "Starting
+    Situation"). Every event after the first on a banner starts from a
+    pity reset to 0 (any outcome, win or loss, resets pity), so only the
+    first event can be affected; this is a no-op whenever a banner's
+    starting pity is 0, which covers the overwhelming majority of
+    questions and leaves their behavior completely unchanged.
+
+    pity_at_outcome is ambiguous on its own: 'won at 30 pity' states the
+    absolute pity COUNTER value, so the pulls actually spent THIS run is
+    30 minus whatever pity already existed; 'lost after 50 pulls' already
+    states a pull COUNT for this run directly, no subtraction needed. The
+    extraction's pity_is_absolute flag on the event disambiguates the two;
+    this function is the only place that distinction is applied, downstream
+    of it every event's pity_at_outcome is uniformly "pulls spent this run".
+
+    Returns (normalized_events, error). Each event in normalized_events
+    gets pity_at_outcome replaced with the actual pulls spent (first event
+    per banner only, when it needed adjusting) and a carryover_note key
+    (None, or a string for the pity pill's tooltip)."""
+    starting_pity = {"character": baseline_params["start_char_pity"],
+                      "weapon": baseline_params["start_weapon_pity"]}
+    starting_guarantee = {"character": baseline_params["start_char_guarantee"],
+                           "weapon": baseline_params["start_weapon_guarantee"]}
+    hard_pity = {"character": baseline_params["char_pity_config"]["hard_pity"],
+                 "weapon": baseline_params["weapon_pity_config"]["hard_pity"]}
+    seen = {"character": False, "weapon": False}
+    normalized = []
+
+    for event in events:
+        banner = event["banner_type"]
+        is_first = not seen[banner]
+        seen[banner] = True
+
+        if is_first and starting_guarantee[banner] and event["outcome"] == "loss":
+            return None, (
+                f"event_order {event['event_order']}: the {banner} banner already had a guaranteed "
+                f"next 5-star from the starting state, so a loss on this event isn't possible"
+            )
+
+        new_event = dict(event, carryover_note=None)
+        pity = event["pity_at_outcome"]
+        start = starting_pity[banner]
+
+        if pity is not None and is_first and start > 0:
+            if event.get("pity_is_absolute", True):
+                pulls_this_run = pity - start
+                if pulls_this_run < 1:
+                    return None, (
+                        f"event_order {event['event_order']}: pity_at_outcome ({pity}) must exceed "
+                        f"the {start} pity already on the {banner} banner before this conversation"
+                    )
+                new_event["pity_at_outcome"] = pulls_this_run
+                new_event["carryover_note"] = (
+                    f"; pity reached {pity}, already starting from {start} on this banner"
+                )
+            elif start + pity > hard_pity[banner]:
+                return None, (
+                    f"event_order {event['event_order']}: {pity} pulls spent from {start} pity "
+                    f"already on the {banner} banner would exceed its hard pity of {hard_pity[banner]}"
+                )
+
+        normalized.append(new_event)
+
+    return normalized, None
+
+
 def _process_events(events, running_pulls, desired_characters, desired_weapons, full_4star_chars):
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
@@ -177,12 +245,17 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
             _pill("number", refunds, "cyan", "refund")
         )
 
+        pity_pill = _pill("number", pity, "cyan", "pity")
+        carryover_note = event.get("carryover_note")
+        if carryover_note:
+            pity_pill = dict(pity_pill, tooltip=pity_pill["tooltip"] + carryover_note)
+
         lines.append({
             "label": label,
             "pills": [
                 _pill("number", start_pulls, "cyan", "start_pulls"),
                 _pill("operator", "−", "magenta", "subtract_op"),
-                _pill("number", pity, "cyan", "pity"),
+                pity_pill,
                 _pill("operator", "+", "magenta", "add_op"),
                 refund_pill,
                 _pill("operator", "=", "magenta", "equals_op"),
@@ -216,6 +289,10 @@ def reconcile(extracted, baseline_params, baseline_stats):
                 "error": "has_event_sequence was true but no events were reported"}
 
     error = _validate_events(events, baseline_params["char_pity_config"], baseline_params["weapon_pity_config"])
+    if error:
+        return {"applies": True, "ok": False, "error": error}
+
+    events, error = _normalize_pity_carryover(events, baseline_params)
     if error:
         return {"applies": True, "ok": False, "error": error}
 
