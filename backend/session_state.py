@@ -55,6 +55,7 @@ TOOLTIPS = {
     "status": "The current state of your goal after the events above",
     "stated_remaining": "Pulls remaining as directly stated in your question, since not every event gave an exact pity count",
     "banner_marker": "Which banner the guarantee flag to the right belongs to",
+    "existing_pity": "Pity already built up on this banner before this run",
 }
 
 _BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
@@ -122,10 +123,11 @@ def _normalize_pity_carryover(events, baseline_params):
     this function is the only place that distinction is applied, downstream
     of it every event's pity_at_outcome is uniformly "pulls spent this run".
 
-    Returns (normalized_events, error). Each event in normalized_events
-    gets pity_at_outcome replaced with the actual pulls spent (first event
-    per banner only, when it needed adjusting) and a carryover_note key
-    (None, or a string for the pity pill's tooltip)."""
+    Returns (normalized_events, error). Each first event on a banner that
+    started with pity gets pity_at_outcome replaced with the actual pulls
+    spent this run, plus a pity_carryover dict driving the parenthetical
+    "(ending pity - starting pity)" breakdown pill; other events are
+    untouched and pity_carryover stays None."""
     starting_pity = {"character": baseline_params["start_char_pity"],
                       "weapon": baseline_params["start_weapon_pity"]}
     starting_guarantee = {"character": baseline_params["start_char_guarantee"],
@@ -146,27 +148,51 @@ def _normalize_pity_carryover(events, baseline_params):
                 f"next 5-star from the starting state, so a loss on this event isn't possible"
             )
 
-        new_event = dict(event, carryover_note=None)
-        pity = event["pity_at_outcome"]
+        new_event = dict(event, pity_carryover=None)
+        reported = event["pity_at_outcome"]
         start = starting_pity[banner]
 
-        if pity is not None and is_first and start > 0:
-            if event.get("pity_is_absolute", True):
-                pulls_this_run = pity - start
+        if reported is not None and is_first and start > 0:
+            is_absolute = event.get("pity_is_absolute", True)
+            if is_absolute:
+                # "at 30 pity": the reported number is the counter value the
+                # outcome landed on; pulls spent this run is that minus the
+                # pity that was already on the banner.
+                ending_pity = reported
+                pulls_this_run = reported - start
                 if pulls_this_run < 1:
                     return None, (
-                        f"event_order {event['event_order']}: pity_at_outcome ({pity}) must exceed "
+                        f"event_order {event['event_order']}: pity_at_outcome ({reported}) must exceed "
                         f"the {start} pity already on the {banner} banner before this conversation"
                     )
-                new_event["pity_at_outcome"] = pulls_this_run
-                new_event["carryover_note"] = (
-                    f"; pity reached {pity}, already starting from {start} on this banner"
-                )
-            elif start + pity > hard_pity[banner]:
-                return None, (
-                    f"event_order {event['event_order']}: {pity} pulls spent from {start} pity "
-                    f"already on the {banner} banner would exceed its hard pity of {hard_pity[banner]}"
-                )
+            else:
+                # "after 50 pulls": the reported number is the pulls spent
+                # this run; the pity already on the banner stacks on top, so
+                # the counter landed on start + reported.
+                ending_pity = start + reported
+                pulls_this_run = reported
+                if ending_pity > hard_pity[banner]:
+                    return None, (
+                        f"event_order {event['event_order']}: {reported} pulls spent from {start} pity "
+                        f"already on the {banner} banner would reach pity {ending_pity}, past its hard "
+                        f"pity of {hard_pity[banner]}"
+                    )
+
+            new_event["pity_at_outcome"] = pulls_this_run
+            new_event["pity_carryover"] = {
+                "ending_pity": ending_pity,
+                "starting_pity": start,
+                "ending_tooltip": (
+                    "The pity the outcome was reached at, as stated in your question"
+                    if is_absolute else
+                    f"The pity the outcome was reached at: {start} already on the banner, "
+                    f"plus {reported} pulls spent this run"
+                ),
+                "minus_tooltip": (
+                    f"Number of pulls spent in this run; pity reached {ending_pity}, "
+                    f"already starting from {start} on this banner"
+                ),
+            }
 
         normalized.append(new_event)
 
@@ -245,10 +271,26 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
             _pill("number", refunds, "cyan", "refund")
         )
 
-        pity_pill = _pill("number", pity, "cyan", "pity")
-        carryover_note = event.get("carryover_note")
-        if carryover_note:
-            pity_pill = dict(pity_pill, tooltip=pity_pill["tooltip"] + carryover_note)
+        carryover = event.get("pity_carryover")
+        if carryover:
+            # Break the pulls-spent figure into "(ending pity - starting
+            # pity)", so the pity that was already on the banner is visible
+            # rather than silently baked into one number. The group's
+            # arithmetic result IS `pity` (the net pulls this run), which is
+            # what the outer equation subtracts and the refund estimate uses.
+            pity_pill = {
+                "kind": "group",
+                "pills": [
+                    {"kind": "number", "value": carryover["ending_pity"], "color": "cyan",
+                     "tooltip": carryover["ending_tooltip"]},
+                    {"kind": "operator", "value": "−", "color": "magenta",
+                     "tooltip": carryover["minus_tooltip"]},
+                    {"kind": "number", "value": carryover["starting_pity"], "color": "cyan",
+                     "tooltip": TOOLTIPS["existing_pity"]},
+                ],
+            }
+        else:
+            pity_pill = _pill("number", pity, "cyan", "pity")
 
         lines.append({
             "label": label,

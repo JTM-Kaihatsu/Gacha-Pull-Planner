@@ -35,6 +35,15 @@ def _blank(**overrides):
     return base
 
 
+def _row(line):
+    """A pill row's values; a group pill (the '(ending - starting)' pity
+    breakdown) becomes a nested list of its own inner values."""
+    return [
+        [sp["value"] for sp in p["pills"]] if p.get("kind") == "group" else p["value"]
+        for p in line["pills"]
+    ]
+
+
 def test_applies_false_when_no_event_sequence():
     result = reconcile(_blank(has_event_sequence=False), BASELINE_PARAMS, BASELINE_STATS)
     assert result == {"applies": False}
@@ -457,30 +466,37 @@ class TestPityCarryover:
     and False starting guarantee, for which all of this is a deliberate
     no-op, that's what confirms zero regression for the common case."""
 
-    def test_absolute_pity_subtracts_starting_pity_from_first_event(self):
-        # "won at 30 pity" with 20 pity already on the banner: only 10
-        # pulls were actually spent this run, not 30.
+    def test_absolute_pity_breaks_into_ending_minus_starting_parenthetical(self):
+        # "won at 30 pity" with 20 pity already on the banner: the pity
+        # figure becomes "(30 - 20)", resolving to 10 pulls actually spent
+        # this run, which is what the outer equation subtracts.
         params = {**BASELINE_PARAMS, "start_char_pity": 20}
         events = [_event(1, "character", "win", 30, 0, pity_is_absolute=True)]
         result = reconcile(_blank(events=events), params, BASELINE_STATS)
         assert result["ok"] is True
         char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
-        values = [p["value"] for p in char_line["pills"]]
-        # 100 - 10 + 0 = 90, not 100 - 30 + 0 = 70
-        assert values == [100, "−", 10, "+", 0, "=", 90, "WIN"]
-        assert "pity reached 30, already starting from 20" in char_line["pills"][2]["tooltip"]
+        # 100 - (30 - 20) + 0 = 90
+        assert _row(char_line) == [100, "−", [30, "−", 20], "+", 0, "=", 90, "WIN"]
+        group = char_line["pills"][2]
+        assert group["kind"] == "group"
+        assert "pity reached 30, already starting from 20" in group["pills"][1]["tooltip"]
+        assert group["pills"][2]["tooltip"] == TOOLTIPS["existing_pity"]
+        assert "as stated in your question" in group["pills"][0]["tooltip"]
 
-    def test_pulls_spent_phrasing_is_not_subtracted(self):
-        # "lost after 50 pulls" already states pulls spent this run
-        # directly; the 10 pity already on the banner doesn't get
-        # subtracted from it, it only affects the resulting absolute pity.
+    def test_pulls_spent_phrasing_shows_computed_ending_pity_in_the_parenthetical(self):
+        # "lost after 50 pulls" with 10 pity already on the banner: 50 pulls
+        # were spent this run and the counter landed on 60. The parenthetical
+        # is "(60 - 10)", still resolving to the 50 pulls actually spent, so
+        # the ledger is unchanged, only the pity is now visible.
         params = {**BASELINE_PARAMS, "start_weapon_pity": 10}
         events = [_event(1, "weapon", "loss", 50, 3, pity_is_absolute=False)]
         result = reconcile(_blank(events=events, pulls_remaining_stated=53), params, BASELINE_STATS)
         assert result["ok"] is True
         weapon_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0 of 1)")
-        values = [p["value"] for p in weapon_line["pills"]]
-        assert values == [100, "−", 50, "+", 3, "=", 53, "LOSS"]
+        # 100 - (60 - 10) + 3 = 53
+        assert _row(weapon_line) == [100, "−", [60, "−", 10], "+", 3, "=", 53, "LOSS"]
+        group = weapon_line["pills"][2]
+        assert "10 already on the banner, plus 50 pulls spent this run" in group["pills"][0]["tooltip"]
 
     def test_refund_estimate_uses_the_normalized_pulls_not_the_raw_pity(self):
         # Refund estimation must use the ACTUAL pulls spent (10), not the
@@ -505,8 +521,8 @@ class TestPityCarryover:
         assert result["ok"] is True
         first = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 0 of 2)")
         second = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 1 of 2)")
-        assert [p["value"] for p in first["pills"]][:3] == [100, "−", 10]
-        assert [p["value"] for p in second["pills"]][:3] == [90, "−", 15]
+        assert _row(first)[:3] == [100, "−", [30, "−", 20]]   # first: parenthetical
+        assert _row(second)[:3] == [90, "−", 15]              # second: flat, pity reset to 0
 
     def test_absolute_pity_not_exceeding_starting_pity_is_an_error(self):
         # "at 20 pity" when the banner already started at pity 30 is
@@ -525,7 +541,7 @@ class TestPityCarryover:
         events = [_event(1, "weapon", "loss", 10, 0, pity_is_absolute=False)]
         result = reconcile(_blank(events=events), params, BASELINE_STATS)
         assert result["ok"] is False
-        assert "exceed its hard pity" in result["error"]
+        assert "past its hard pity" in result["error"]
 
     def test_loss_on_an_already_guaranteed_banner_is_an_error(self):
         # A guaranteed next 5-star cannot lose the 50/50; a "loss" reported
@@ -562,7 +578,7 @@ class TestPityCarryover:
         result = reconcile(_blank(events=events), params, BASELINE_STATS)
         assert result["ok"] is True
         char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
-        assert [p["value"] for p in char_line["pills"]][:3] == [100, "−", 10]
+        assert _row(char_line)[:3] == [100, "−", [30, "−", 20]]
 
     def test_guarantee_contradiction_check_only_applies_to_the_first_event(self):
         # The banner started guaranteed and the first event is a
@@ -586,7 +602,7 @@ class TestPityCarryover:
         result = reconcile(_blank(events=events), params, BASELINE_STATS)
         assert result["ok"] is True
         char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
-        assert [p["value"] for p in char_line["pills"]][:3] == [100, "−", 1]
+        assert _row(char_line)[:3] == [100, "−", [31, "−", 30]]
 
     def test_pulls_spent_landing_exactly_on_hard_pity_is_valid(self):
         # Boundary: landing exactly AT the hard pity cap is the guaranteed-
@@ -598,13 +614,15 @@ class TestPityCarryover:
 
     def test_zero_starting_pity_is_a_complete_no_op(self):
         # Explicit regression guard: with 0 starting pity (the default),
-        # behavior must be byte-identical to before this feature existed.
+        # behavior must be byte-identical to before this feature existed,
+        # a flat pity pill, no parenthetical.
         events = [_event(1, "character", "win", 30, 0, pity_is_absolute=True)]
         result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
-        assert [p["value"] for p in char_line["pills"]] == [100, "−", 30, "+", 0, "=", 70, "WIN"]
-        assert char_line["pills"][2]["tooltip"] == TOOLTIPS["pity"]  # no carryover note appended
+        assert _row(char_line) == [100, "−", 30, "+", 0, "=", 70, "WIN"]
+        assert char_line["pills"][2]["kind"] != "group"
+        assert char_line["pills"][2]["tooltip"] == TOOLTIPS["pity"]
 
 
 class TestRefundEstimationInReconcile:
