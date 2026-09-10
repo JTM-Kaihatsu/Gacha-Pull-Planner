@@ -16,6 +16,21 @@ const PILL_STYLES = {
 // relied on to actually surface. This is a real, instant, styled tooltip
 // instead, shown via a CSS group-hover on a wrapping span.
 function Pill({ pill }) {
+  // A "group" pill wraps its own sub-pills in literal parentheses with a
+  // plain light border and no background of its own, so a two-part figure
+  // like "(ending pity - starting pity)" reads as one bracketed unit.
+  if (pill.kind === 'group') {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-slate-600 px-1.5 py-1">
+        <span className="text-xs font-mono text-slate-500">(</span>
+        {pill.pills.map((p, i) => (
+          <Pill key={i} pill={p} />
+        ))}
+        <span className="text-xs font-mono text-slate-500">)</span>
+      </span>
+    )
+  }
+
   const style = PILL_STYLES[pill.color] || PILL_STYLES.default
   const isOperator = pill.kind === 'operator'
   return (

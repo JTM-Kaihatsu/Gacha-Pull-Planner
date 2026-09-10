@@ -285,6 +285,14 @@ def _condense(stats):
     }
 
 
+def _pill_text(pill):
+    """One pill's value as text, recursing into a group pill's own pills
+    and wrapping them in parentheses the way the UI renders them."""
+    if pill.get("kind") == "group":
+        return "(" + " ".join(_pill_text(p) for p in pill["pills"]) + ")"
+    return str(pill["value"])
+
+
 def _lines_to_text(lines):
     """Flatten the structured pill lines into plain text for the
     interpretation model's grounding context. The pills themselves (with
@@ -292,7 +300,7 @@ def _lines_to_text(lines):
     has something readable to cite from."""
     parts = []
     for line in lines:
-        values = " ".join(str(p["value"]) for p in line["pills"])
+        values = " ".join(_pill_text(p) for p in line["pills"])
         parts.append(f"{line['label']}: {values}")
     return "; ".join(parts)
 
