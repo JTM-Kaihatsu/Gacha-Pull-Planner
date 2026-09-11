@@ -166,9 +166,31 @@ SESSION_STATE_SCHEMA = {
             ),
             "items": SCENARIO_SCHEMA,
         },
+        "starting_situation_corrections": {
+            "type": ["array", "null"],
+            "description": (
+                "ONLY set when a prior clarifying question told you a banner's starting pity "
+                "or guarantee (not an event's own reported number) was wrong, and the user's "
+                "answer corrects it, e.g. 'actually my weapon pity was only 10, not what the "
+                "form says'. One entry per banner corrected: banner, corrected_pity (null if "
+                "unchanged), corrected_guarantee (null if unchanged). Null otherwise, this is "
+                "almost never used."
+            ),
+            "items": {
+                "type": "object",
+                "properties": {
+                    "banner": {"type": "string", "enum": ["character", "weapon"]},
+                    "corrected_pity": {"type": ["integer", "null"]},
+                    "corrected_guarantee": {"type": ["boolean", "null"]},
+                },
+                "required": ["banner", "corrected_pity", "corrected_guarantee"],
+                "additionalProperties": False,
+            },
+        },
     },
     "required": [
         "has_event_sequence", *_SCENARIO_FIELDS.keys(), "condition_label", "additional_scenarios",
+        "starting_situation_corrections",
     ],
     "additionalProperties": False,
 }
@@ -234,7 +256,15 @@ EXTRACTION_SYSTEM_PROMPT = (
     "condition_label and its own events/goal fields. Every scenario starts from the exact "
     "same starting point, the same baseline pulls, pity, and goal; a later scenario is an "
     "alternative to the earlier ones, never a continuation of them. Do not invent a branch "
-    "for a question that only actually describes one path."
+    "for a question that only actually describes one path. If (and only if) the context "
+    "below includes a prior clarifying question and the user's answer to it, apply that "
+    "answer to correct the specific event it was about: if they confirmed a reported number "
+    "was a TOTAL including existing pity, set that event's pity_is_absolute to true using "
+    "the exact same number; if they gave a different number for that event, use their "
+    "corrected number instead; if they said the banner's STARTING pity or guarantee itself "
+    "was wrong (not the event), report that in starting_situation_corrections instead and "
+    "leave the event as originally reported. starting_situation_corrections is null on every "
+    "other question."
 )
 
 RUN_SIMULATION_TOOL = {
@@ -470,34 +500,175 @@ def _reconcile_scenario_list(extracted, baseline_params, baseline_stats):
     """Reconcile every scenario in one extraction result against the SAME
     baseline. Stops at the first failure rather than partially reconciling
     the rest, so a retry re-extracts the whole set fresh instead of trying
-    to patch just one branch in isolation."""
+    to patch just one branch in isolation.
+
+    A pity conflict (a banner's reported pulls don't fit its actual
+    starting pity) is only surfaced as its own rich, clarifiable result
+    when the question is a single scenario; a conflict inside one branch
+    of a multi-scenario question falls back to the ordinary decline path
+    instead; resolving one specific branch's ambiguity through the same
+    human-clarification UI as the single-scenario case is not supported."""
     scenarios = _scenarios_from_extraction(extracted)
     reconciled_scenarios = []
     for scenario in scenarios:
         reconciled = reconcile(scenario, baseline_params, baseline_stats)
         if not reconciled["ok"]:
+            if reconciled.get("conflict") and len(scenarios) == 1:
+                return {"ok": False, "conflict": True,
+                        "lines": reconciled["lines"], "conflicts": reconciled["conflicts"]}
             label = scenario.get("condition_label")
             prefix = f"{label}: " if label else ""
-            return {"ok": False, "error": f"{prefix}{reconciled['error']}"}
+            error = reconciled.get("error") or "one or more reported pull counts don't fit the starting pity"
+            return {"ok": False, "error": f"{prefix}{error}"}
         reconciled["condition_label"] = scenario.get("condition_label")
         reconciled_scenarios.append(reconciled)
     return {"ok": True, "scenarios": reconciled_scenarios}
 
 
-def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_stats):
+_RESOLUTION_LABELS = {
+    "total_includes_existing_pity": "USER CLARIFICATION: ",
+    "starting_situation": "USER MODIFICATION TO INITIAL SITUATION: ",
+    "prompt": "USER MODIFICATION TO PROMPT: ",
+}
+
+
+def _build_clarification_feedback(conflicts, clarifications):
+    """Turn the user's typed answers to one or more conflict clarifying
+    questions into error_feedback text for a re-extraction, matched to the
+    freshly-rediscovered conflicts (not whatever the frontend echoes back)
+    by banner + attempt_number, the same pairing the conflict blocks were
+    built with in the first place."""
+    answers = {(c["banner"], c["attempt_number"]): c["answer"] for c in clarifications if c.get("answer")}
+    parts = []
+    for conflict in conflicts:
+        answer = answers.get((conflict["banner"], conflict["attempt_number"]))
+        if not answer:
+            continue
+        parts.append(
+            f'For the {conflict["banner"]} banner, attempt {conflict["attempt_number"]} of '
+            f'{conflict["total_attempts"]} (reported as {conflict["reported_pulls"]} pulls spent), '
+            f'you asked: "{conflict["question"]}" The user answered: "{answer}"'
+        )
+    return " ".join(parts)
+
+
+def _classify_resolution(conflict, extracted, fallback_answer):
+    """After a retry extraction meant to resolve one conflict, work out
+    which of the three ways the user resolved it, by comparing the retry's
+    output against what originally conflicted, so the right hardcoded
+    label ends up on the annotation: never let the model choose its own
+    label text for this, the exact prefix matters and prompt-only
+    instructions to relay specific wording have repeatedly not been
+    followed reliably elsewhere in this module.
+
+    Returns (kind, description_text) or None if nothing about this
+    conflict's banner/event actually changed (the retry didn't apply it)."""
+    banner_label = conflict["banner"].capitalize()
+
+    for correction in extracted.get("starting_situation_corrections") or []:
+        if correction.get("banner") != conflict["banner"]:
+            continue
+        bits = []
+        if correction.get("corrected_pity") is not None:
+            bits.append(f"pity {correction['corrected_pity']}")
+        if correction.get("corrected_guarantee") is not None:
+            bits.append(f"guarantee {'true' if correction['corrected_guarantee'] else 'false'}")
+        if bits:
+            return ("starting_situation", f"{banner_label} banner starting {' and '.join(bits)}.")
+
+    events = [e for e in (extracted.get("events") or []) if e.get("banner_type") == conflict["banner"]]
+    if len(events) >= conflict["attempt_number"]:
+        event = events[conflict["attempt_number"] - 1]
+        if event.get("pity_is_absolute") and event.get("pity_at_outcome") == conflict["reported_pulls"]:
+            return ("total_includes_existing_pity",
+                    f"{conflict['reported_pulls']} total pulls were used, including existing pity.")
+        if event.get("pity_at_outcome") != conflict["reported_pulls"]:
+            return ("prompt", (
+                f"{banner_label} banner attempt {conflict['attempt_number']} of "
+                f"{conflict['total_attempts']}: {fallback_answer}"
+            ))
+
+    return None
+
+
+def _apply_starting_situation_corrections(baseline_params, corrections):
+    """A 'starting situation' resolution overwrites a banner's starting pity
+    or guarantee for THIS reconciliation only, never the caller's own
+    baseline_params dict: the user's correction applies to the run here, not
+    to the overall Monte Carlo simulation and visualization above, which
+    keeps whatever was actually entered in the form. Returns a new dict,
+    baseline_params itself is never mutated."""
+    if not corrections:
+        return baseline_params
+    adjusted = dict(baseline_params)
+    for correction in corrections:
+        prefix = {"character": "char", "weapon": "weapon"}.get(correction.get("banner"))
+        if not prefix:
+            continue
+        if correction.get("corrected_pity") is not None:
+            adjusted[f"start_{prefix}_pity"] = correction["corrected_pity"]
+        if correction.get("corrected_guarantee") is not None:
+            adjusted[f"start_{prefix}_guarantee"] = correction["corrected_guarantee"]
+    return adjusted
+
+
+def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_stats, clarifications=None):
     """Extract every scenario the question describes (usually just one) and
-    reconcile each deterministically against the same baseline. Retries the
-    whole extraction once if any scenario fails to reconcile. If it still
-    cannot reconcile, returns applies=True, ok=False rather than silently
-    discarding the narrative, so the caller can tell the user reconciliation
-    failed instead of quietly answering from the unadjusted baseline as if
-    nothing had been stated."""
+    reconcile each deterministically against the same baseline.
+
+    A genuine pity conflict (see reconcile()) is never auto-retried, an
+    automated second guess can't resolve an ambiguity only the user can
+    answer, it's returned immediately so the caller can surface it. If
+    `clarifications` (answers to a previous round of conflict questions)
+    are supplied, they're folded into ONE re-extraction attempt first, and
+    `annotations` on the result names how each was resolved for the UI's
+    labeled context line. Any other reconciliation failure still gets the
+    existing one-shot auto-retry, since that failure mode is usually just
+    the model misreading the question, which a second attempt can fix on
+    its own.
+
+    Returns applies=True, ok=False rather than silently discarding the
+    narrative when nothing resolves it, so the caller can tell the user
+    reconciliation failed instead of quietly answering from the unadjusted
+    baseline as if nothing had been stated."""
     extracted = _extract_session_state(client, model, question, baseline_stats)
     if not extracted.get("has_event_sequence"):
         return {"applies": False}
 
     result = _reconcile_scenario_list(extracted, baseline_params, baseline_stats)
     if result["ok"]:
+        return {"applies": True, **result}
+
+    if result.get("conflict"):
+        if clarifications:
+            feedback = _build_clarification_feedback(result["conflicts"], clarifications)
+            if feedback:
+                retry_extracted = _extract_session_state(
+                    client, model, question, baseline_stats, error_feedback=feedback,
+                )
+                if retry_extracted.get("has_event_sequence"):
+                    retry_baseline_params = _apply_starting_situation_corrections(
+                        baseline_params, retry_extracted.get("starting_situation_corrections"),
+                    )
+                    retried = _reconcile_scenario_list(retry_extracted, retry_baseline_params, baseline_stats)
+                    if retried["ok"] or retried.get("conflict"):
+                        annotations = []
+                        for conflict in result["conflicts"]:
+                            answer = next(
+                                (c["answer"] for c in clarifications
+                                 if c["banner"] == conflict["banner"]
+                                 and c["attempt_number"] == conflict["attempt_number"]),
+                                None,
+                            )
+                            if not answer:
+                                continue
+                            classified = _classify_resolution(conflict, retry_extracted, answer)
+                            if classified:
+                                kind, text = classified
+                                annotations.append({"label": _RESOLUTION_LABELS[kind], "text": text})
+                        return {"applies": True, "annotations": annotations, **retried}
+        # No clarifications yet, or applying them didn't produce anything
+        # usable: surface the conflict as-is rather than silently decline.
         return {"applies": True, **result}
 
     first_error = result["error"]
@@ -508,7 +679,7 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
         return {"applies": True, "ok": False, "error": first_error}
 
     result = _reconcile_scenario_list(extracted, baseline_params, baseline_stats)
-    if result["ok"]:
+    if result["ok"] or result.get("conflict"):
         return {"applies": True, **result}
     return {"applies": True, "ok": False, "error": result["error"]}
 
@@ -594,19 +765,32 @@ def _answer_branching_scenarios(client, model, question, baseline_params, scenar
     return (response.choices[0].message.content or "").strip(), runs, breakdown
 
 
-def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_tool_calls=MAX_TOOL_CALLS):
+def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_tool_calls=MAX_TOOL_CALLS,
+                 clarifications=None):
     """Run the agentic follow-up loop.
+
+    `clarifications`, when given, is the user's answers to a previous
+    round of conflict clarifying questions: a list of
+    {"banner", "attempt_number", "answer"} (the first two identify which
+    conflict block the answer is for, exactly as returned in that block).
 
     Returns (answer_text, runs, breakdown) where runs is the list of condensed
     simulation results actually run (for the UI receipts), and breakdown is
     None (a pure hypothetical, no event sequence to show), {"status": "ok",
-    "lines": [...]} (the structured, deterministically-built pill data for a
-    single reconciled scenario), {"status": "ok", "groups": [{"label": ...,
-    "lines": [...]}, ...]} (the question reconciled into two or more
-    mutually exclusive scenarios, one group per branch, see
-    _answer_branching_scenarios), or {"status": "error", "message": "..."}
-    (an event sequence was described but could not be reconciled; see
-    PARSE_FAILURE_MESSAGE for the answer text in that case)."""
+    "lines": [...], "annotations": [...]} (the structured, deterministically-
+    built pill data for a single reconciled scenario; annotations is only
+    present when clarifications resolved a prior conflict, one
+    {"label", "text"} per conflict answered, for the UI's labeled context
+    line), {"status": "ok", "groups": [{"label": ..., "lines": [...]}, ...]}
+    (the question reconciled into two or more mutually exclusive scenarios,
+    one group per branch, see _answer_branching_scenarios), {"status":
+    "conflict", "lines": [...], "conflicts": [...]} (one or more banners'
+    reported pulls don't fit their actual starting pity, a genuine
+    ambiguity for the user to resolve, not a plain parse failure; answer_text
+    is empty, there is nothing to say until it's resolved), or {"status":
+    "error", "message": "..."} (an event sequence was described but could
+    not be reconciled; see PARSE_FAILURE_MESSAGE for the answer text in
+    that case)."""
     client = OpenAI(api_key=get_openai_api_key())
     model = model or get_model()
 
@@ -630,7 +814,15 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     # regardless of what the model passes. See _run_tool.
     lock_start_state = False
 
-    reconciled = _reconcile_all_scenarios(client, model, question, baseline_params, baseline_stats)
+    reconciled = _reconcile_all_scenarios(
+        client, model, question, baseline_params, baseline_stats, clarifications=clarifications,
+    )
+    if reconciled.get("applies") and reconciled.get("conflict"):
+        # A genuine "does the reported pull count fit the starting pity"
+        # ambiguity, not a plain decline: no prose answer to give, the
+        # conflict blocks themselves ARE the answer, waiting on the user.
+        breakdown = {"status": "conflict", "lines": reconciled["lines"], "conflicts": reconciled["conflicts"]}
+        return "", [], breakdown
     if reconciled.get("applies") and reconciled.get("ok") and len(reconciled["scenarios"]) > 1:
         return _answer_branching_scenarios(
             client, model, question, baseline_params, reconciled["scenarios"],
@@ -644,6 +836,8 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         if scenario["goal_complete"] or scenario["pulls_exhausted"]:
             # Nothing left to simulate, so answer directly from the verified state.
             breakdown = {"status": "ok", "lines": lines}
+            if reconciled.get("annotations"):
+                breakdown["annotations"] = reconciled["annotations"]
             remaining = remaining_goal_text(scenario["remaining_characters"], scenario["remaining_weapons"])
             context = (
                 f"Verified session state (already reconciled from the question, treat as "
@@ -686,6 +880,8 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         runs.append(primary_result)
         lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
         breakdown = {"status": "ok", "lines": lines}
+        if reconciled.get("annotations"):
+            breakdown["annotations"] = reconciled["annotations"]
         remaining = remaining_goal_text(scenario["remaining_characters"], scenario["remaining_weapons"])
         context = (
             f"Verified session state (already reconciled from the question, treat as fact "

@@ -46,8 +46,14 @@ class SimRequest(BaseModel):
     char_pity_config: PityConfig = PityConfig()
     weapon_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
+class Clarification(BaseModel):
+    banner: Literal["character", "weapon"]
+    attempt_number: int = Field(..., ge=1)
+    answer: str = Field(..., min_length=1, max_length=500)
+
 class AdviseRequest(SimRequest):
     question: str = Field(..., min_length=1, max_length=500)
+    clarifications: List[Clarification] | None = None
 
 @app.post("/analyze")
 def analyze(req: SimRequest):
@@ -119,10 +125,16 @@ def advise(req: AdviseRequest):
         logger.exception("baseline simulation failed in /advise")
         raise HTTPException(status_code=500, detail=str(exc))
 
+    clarifications = (
+        [c.model_dump() for c in req.clarifications] if req.clarifications else None
+    )
+
     runs = []
     breakdown = None
     try:
-        answer, runs, breakdown = run_advisor(baseline_params, baseline_stats, req.question)
+        answer, runs, breakdown = run_advisor(
+            baseline_params, baseline_stats, req.question, clarifications=clarifications,
+        )
         status = "ok"
         logger.info("advisor ok | question=%r | answer=%r", req.question[:120], (answer or "")[:200])
     except Exception as exc:

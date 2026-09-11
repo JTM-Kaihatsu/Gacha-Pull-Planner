@@ -89,8 +89,25 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
         # spare", "I lost, and I have 81 pulls left"). That event still
         # updates obtained counts and guarantees; it just can't contribute
         # to the pulls ledger, so pulls_remaining_stated becomes required.
-        if pity is not None and (not isinstance(pity, int) or not (0 <= pity <= hard_pity)):
-            return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
+        if pity is not None:
+            if not isinstance(pity, int) or pity < 0:
+                return f"event_order {event['event_order']}: pity_at_outcome ({pity}) cannot be negative"
+            # hard_pity bounds pity_at_outcome regardless of phrasing: an
+            # absolute pity COUNTER obviously can't exceed it, but neither
+            # can a pulls-SPENT count taken by itself, no single attempt can
+            # ever take more pulls than hard pity allows, independent of
+            # whatever pity carried over from before this conversation. This
+            # is a flat, unrecoverable error either way, not something a
+            # clarifying question could resolve: if the number itself is
+            # already too high to be a valid pity value under ANY reading,
+            # asking "did you mean it as a total including existing pity"
+            # is pointless, that reading would be just as invalid. Whether a
+            # pulls-spent count fits ON TOP OF that banner's actual starting
+            # pity (0 unless it's the banner's first event with carryover)
+            # is a separate, narrower question only _normalize_pity_carryover
+            # can answer, and IS the genuine ambiguity worth clarifying.
+            if pity > hard_pity:
+                return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
         # refund_count may be null: the question simply didn't mention
         # refunds for this event. That's distinct from an explicit "no
         # refunds" (0), and is later filled in by _estimate_refunds when
@@ -107,96 +124,133 @@ def _run_label(banner, run_number, obtained, desired):
 
 
 def _normalize_pity_carryover(events, baseline_params):
-    """Reconcile each banner's FIRST event against whatever pity/guarantee
-    that banner already had before this conversation (the "Starting
-    Situation"). Every event after the first on a banner starts from a
-    pity reset to 0 (any outcome, win or loss, resets pity), so only the
-    first event can be affected; this is a no-op whenever a banner's
-    starting pity is 0, which covers the overwhelming majority of
+    """Reconcile each event against whatever pity/guarantee its banner
+    actually had at that point: the "Starting Situation" baseline for a
+    banner's FIRST event, 0 for every event after (pity always resets on
+    any outcome, win or loss). This is a no-op whenever a banner's starting
+    pity is 0 and stays 0, which covers the overwhelming majority of
     questions and leaves their behavior completely unchanged.
 
     pity_at_outcome is ambiguous on its own: 'won at 30 pity' states the
     absolute pity COUNTER value, so the pulls actually spent THIS run is
     30 minus whatever pity already existed; 'lost after 50 pulls' already
-    states a pull COUNT for this run directly, no subtraction needed. The
-    extraction's pity_is_absolute flag on the event disambiguates the two;
-    this function is the only place that distinction is applied, downstream
-    of it every event's pity_at_outcome is uniformly "pulls spent this run".
+    states a pull COUNT for this run directly. The extraction's
+    pity_is_absolute flag disambiguates the two; this function is the only
+    place that distinction is applied, downstream of it every event's
+    pity_at_outcome is uniformly "pulls spent this run".
 
-    Returns (normalized_events, error). Each first event on a banner that
-    started with pity gets pity_at_outcome replaced with the actual pulls
-    spent this run, plus a pity_carryover dict driving the parenthetical
-    "(ending pity - starting pity)" breakdown pill; other events are
-    untouched and pity_carryover stays None."""
+    Returns a dict:
+      {"ok": True, "events": [...]} on success. Each banner's first event,
+        if it started with pity, gets pity_at_outcome replaced with the
+        actual pulls spent and a pity_carryover dict driving the
+        "(ending pity - starting pity)" pill, but ONLY when that breakdown
+        reveals something the question didn't already state outright (the
+        absolute-pity case always does; a pulls-spent event that already
+        fits within hard pity doesn't, so it stays a flat number).
+      {"ok": False, "error": "..."} for a hard, unrecoverable contradiction
+        (an already-guaranteed banner losing, or an absolute pity not
+        exceeding what was already on the banner).
+      {"ok": False, "conflicts": [...]} when one or more pulls-spent events
+        claim more pulls than that banner's hard pity allows from its
+        actual starting point: a genuine ambiguity ('did the 50 pulls you
+        mentioned already include the pity you started with?') only the
+        user can resolve, not a plain mistake to just reject.
+    """
     starting_pity = {"character": baseline_params["start_char_pity"],
                       "weapon": baseline_params["start_weapon_pity"]}
     starting_guarantee = {"character": baseline_params["start_char_guarantee"],
                            "weapon": baseline_params["start_weapon_guarantee"]}
     hard_pity = {"character": baseline_params["char_pity_config"]["hard_pity"],
                  "weapon": baseline_params["weapon_pity_config"]["hard_pity"]}
+
+    total_per_banner = {"character": 0, "weapon": 0}
+    for event in events:
+        total_per_banner[event["banner_type"]] += 1
+
     seen = {"character": False, "weapon": False}
+    attempt_number = {"character": 0, "weapon": 0}
     normalized = []
+    conflicts = []
 
     for event in events:
         banner = event["banner_type"]
         is_first = not seen[banner]
         seen[banner] = True
+        attempt_number[banner] += 1
 
         if is_first and starting_guarantee[banner] and event["outcome"] == "loss":
-            return None, (
+            return {"ok": False, "error": (
                 f"event_order {event['event_order']}: the {banner} banner already had a guaranteed "
                 f"next 5-star from the starting state, so a loss on this event isn't possible"
-            )
+            )}
 
         new_event = dict(event, pity_carryover=None)
         reported = event["pity_at_outcome"]
-        start = starting_pity[banner]
+        # Only a banner's FIRST event can carry pity over from the starting
+        # situation; every later event on it starts from a pity reset to 0.
+        start = starting_pity[banner] if is_first else 0
 
-        if reported is not None and is_first and start > 0:
+        if reported is not None:
             is_absolute = event.get("pity_is_absolute", True)
             if is_absolute:
                 # "at 30 pity": the reported number is the counter value the
                 # outcome landed on; pulls spent this run is that minus the
-                # pity that was already on the banner.
-                ending_pity = reported
-                pulls_this_run = reported - start
-                if pulls_this_run < 1:
-                    return None, (
-                        f"event_order {event['event_order']}: pity_at_outcome ({reported}) must exceed "
-                        f"the {start} pity already on the {banner} banner before this conversation"
-                    )
+                # pity that was already on the banner. Only meaningful when
+                # there WAS carryover pity: with start == 0 the reported
+                # value already equals pulls spent (and _validate_events
+                # already confirmed it's within hard pity), so there's
+                # nothing to subtract and no parenthetical to show.
+                if start > 0:
+                    ending_pity = reported
+                    pulls_this_run = reported - start
+                    if pulls_this_run < 1:
+                        return {"ok": False, "error": (
+                            f"event_order {event['event_order']}: pity_at_outcome ({reported}) must "
+                            f"exceed the {start} pity already on the {banner} banner before this "
+                            f"conversation"
+                        )}
+                    new_event["pity_at_outcome"] = pulls_this_run
+                    new_event["pity_carryover"] = {
+                        "ending_pity": ending_pity,
+                        "starting_pity": start,
+                        "ending_tooltip": "The pity the outcome was reached at, as stated in your question",
+                        "minus_tooltip": (
+                            f"Number of pulls spent in this run; pity reached {ending_pity}, "
+                            f"already starting from {start} on this banner"
+                        ),
+                    }
             else:
-                # "after 50 pulls": the reported number is the pulls spent
-                # this run; the pity already on the banner stacks on top, so
-                # the counter landed on start + reported.
+                # "after 50 pulls": the reported number is already the pulls
+                # spent this run; whatever pity the banner had at the start
+                # of THIS event (its own starting pity if it's the banner's
+                # first event, 0 otherwise) stacks on top to determine
+                # whether the counter could plausibly have reached that
+                # point without an earlier guaranteed hit. Checked
+                # regardless of whether start is 0: reporting more pulls
+                # than the hard pity allows is impossible either way.
                 ending_pity = start + reported
-                pulls_this_run = reported
                 if ending_pity > hard_pity[banner]:
-                    return None, (
-                        f"event_order {event['event_order']}: {reported} pulls spent from {start} pity "
-                        f"already on the {banner} banner would reach pity {ending_pity}, past its hard "
-                        f"pity of {hard_pity[banner]}"
-                    )
-
-            new_event["pity_at_outcome"] = pulls_this_run
-            new_event["pity_carryover"] = {
-                "ending_pity": ending_pity,
-                "starting_pity": start,
-                "ending_tooltip": (
-                    "The pity the outcome was reached at, as stated in your question"
-                    if is_absolute else
-                    f"The pity the outcome was reached at: {start} already on the banner, "
-                    f"plus {reported} pulls spent this run"
-                ),
-                "minus_tooltip": (
-                    f"Number of pulls spent in this run; pity reached {ending_pity}, "
-                    f"already starting from {start} on this banner"
-                ),
-            }
+                    conflicts.append({
+                        "event_order": event["event_order"],
+                        "banner": banner,
+                        "attempt_number": attempt_number[banner],
+                        "total_attempts": total_per_banner[banner],
+                        "reported_pulls": reported,
+                        "starting_pity": start,
+                        "hard_pity": hard_pity[banner],
+                        "outcome": event["outcome"],
+                    })
+                # Otherwise it checks out: net-new pulls is just `reported`,
+                # exactly as already set above, no parenthetical, showing
+                # "(80 - 5)" here would only reconstruct the 50 the question
+                # already gave directly, revealing nothing new.
 
         normalized.append(new_event)
 
-    return normalized, None
+    if conflicts:
+        return {"ok": False, "conflicts": conflicts}
+
+    return {"ok": True, "events": normalized}
 
 
 def _process_events(events, running_pulls, desired_characters, desired_weapons, full_4star_chars):
@@ -310,6 +364,79 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
             run_index["character"], run_index["weapon"], running_pulls, any_unknown_pity, None)
 
 
+def _build_conflict_block(conflict):
+    """One "did you mean total including existing pity" block: a header
+    identifying which attempt on which banner (relevant once there's more
+    than one event on it), the clarifying question, and the reported
+    number and outcome wrapped in a red-bordered group, the same visual
+    device as the pity-breakdown parenthetical elsewhere, just red instead
+    of neutral grey to flag it as unresolved rather than as extra context."""
+    banner_label = _BANNER_LABEL[conflict["banner"]]
+    reported = conflict["reported_pulls"]
+    return {
+        "event_order": conflict["event_order"],
+        "banner": conflict["banner"],
+        "attempt_number": conflict["attempt_number"],
+        "total_attempts": conflict["total_attempts"],
+        # Plain data alongside the rendering fields below, for advisor.py to
+        # match a clarification answer back to its conflict and build retry
+        # feedback text, without digging the number back out of the pills.
+        "reported_pulls": reported,
+        "header": f"For {banner_label} Attempt {conflict['attempt_number']} of {conflict['total_attempts']}",
+        "question": (
+            f"You reported {reported} pulls spent on the {banner_label} banner, but given the "
+            f"initial pity for the {banner_label} banner, this isn't possible. Did you mean in "
+            f"total, including existing pity, you had spent {reported} pulls, or did you mean "
+            f"something else?"
+        ),
+        "pills": [{
+            "kind": "group",
+            "color": "red",
+            "pills": [
+                {
+                    "kind": "number", "value": reported, "color": "red",
+                    "tooltip": (
+                        f"Reported as pulls spent this run, but {conflict['starting_pity']} pity "
+                        f"already on the {banner_label.lower()} banner would put the total past its "
+                        f"hard pity of {conflict['hard_pity']}"
+                    ),
+                },
+                _pill("outcome", conflict["outcome"].upper(),
+                      "green" if conflict["outcome"] == "win" else "red", "outcome"),
+            ],
+        }],
+    }
+
+
+def _build_conflict_result(events, conflicts, baseline_params, total_pulls_budget,
+                            desired_characters, desired_weapons):
+    """Build the response for one or more pulls-spent conflicts: pills for
+    whatever preceded the FIRST conflict (fully resolved with the same
+    machinery a normal reconciliation uses, since nothing about them is
+    ambiguous), plus one flagged block per conflict found anywhere in the
+    sequence, so every violation gets its own clarifying question up front
+    instead of being discovered one at a time across repeated retries."""
+    first_conflict_order = min(c["event_order"] for c in conflicts)
+    resolved_events = [e for e in events if e["event_order"] < first_conflict_order]
+
+    lines = []
+    if resolved_events:
+        carryover = _normalize_pity_carryover(resolved_events, baseline_params)
+        if carryover["ok"]:
+            event_lines, *_, process_error = _process_events(
+                carryover["events"], total_pulls_budget, desired_characters, desired_weapons,
+                baseline_params["full_4star_chars"],
+            )
+            if not process_error:
+                lines = event_lines
+
+    return {
+        "applies": True, "ok": False, "conflict": True,
+        "lines": lines,
+        "conflicts": [_build_conflict_block(c) for c in conflicts],
+    }
+
+
 def reconcile(extracted, baseline_params, baseline_stats):
     """Turn the extraction model's structured event sequence into a
     verified, ready-to-simulate state plus the structured pill data the UI
@@ -334,17 +461,15 @@ def reconcile(extracted, baseline_params, baseline_stats):
     if error:
         return {"applies": True, "ok": False, "error": error}
 
-    events, error = _normalize_pity_carryover(events, baseline_params)
-    if error:
-        return {"applies": True, "ok": False, "error": error}
-
     # additional_*_copies_wanted is a signed delta on the original goal, not
     # a total: positive adds copies beyond it, negative reduces it (e.g. the
     # user gives up on further copies of a banner after a bad outcome).
     # Floored at 0, not at whatever's already obtained in this scenario,
     # events processed further down already floor "remaining" at 0 on their
     # own, so a reduction that dips below the obtained count still resolves
-    # correctly as "goal complete for that banner".
+    # correctly as "goal complete for that banner". Computed before
+    # normalizing pity so a conflict below can still build resolved pills
+    # for whatever preceded it, using the real goal.
     additional_chars = extracted.get("additional_character_copies_wanted") or 0
     additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
     desired_characters = max(baseline_stats["desired_characters"] + additional_chars, 0)
@@ -362,6 +487,16 @@ def reconcile(extracted, baseline_params, baseline_stats):
         return {"applies": True, "ok": False, "error": f"additional_pulls_stated ({additional_pulls}) cannot be negative"}
 
     total_pulls_budget = extracted.get("total_pulls_restated") or baseline_params["total_pulls"]
+
+    carryover = _normalize_pity_carryover(events, baseline_params)
+    if not carryover["ok"]:
+        if "conflicts" in carryover:
+            return _build_conflict_result(
+                events, carryover["conflicts"], baseline_params,
+                total_pulls_budget, desired_characters, desired_weapons,
+            )
+        return {"applies": True, "ok": False, "error": carryover["error"]}
+    events = carryover["events"]
 
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
      char_events, weapon_events, running_pulls, any_unknown_pity,

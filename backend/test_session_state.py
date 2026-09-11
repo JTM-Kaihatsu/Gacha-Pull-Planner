@@ -483,20 +483,18 @@ class TestPityCarryover:
         assert group["pills"][2]["tooltip"] == TOOLTIPS["existing_pity"]
         assert "as stated in your question" in group["pills"][0]["tooltip"]
 
-    def test_pulls_spent_phrasing_shows_computed_ending_pity_in_the_parenthetical(self):
-        # "lost after 50 pulls" with 10 pity already on the banner: 50 pulls
-        # were spent this run and the counter landed on 60. The parenthetical
-        # is "(60 - 10)", still resolving to the 50 pulls actually spent, so
-        # the ledger is unchanged, only the pity is now visible.
+    def test_pulls_spent_phrasing_within_bounds_stays_a_flat_number(self):
+        # "lost after 50 pulls" with 10 pity already on the banner checks
+        # out fine (10 + 50 = 60 <= 80 hard pity): no parenthetical, since
+        # "(60 - 10)" would only reconstruct the 50 the question already
+        # gave directly, revealing nothing new. The ledger is unaffected.
         params = {**BASELINE_PARAMS, "start_weapon_pity": 10}
         events = [_event(1, "weapon", "loss", 50, 3, pity_is_absolute=False)]
         result = reconcile(_blank(events=events, pulls_remaining_stated=53), params, BASELINE_STATS)
         assert result["ok"] is True
         weapon_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0 of 1)")
-        # 100 - (60 - 10) + 3 = 53
-        assert _row(weapon_line) == [100, "−", [60, "−", 10], "+", 3, "=", 53, "LOSS"]
-        group = weapon_line["pills"][2]
-        assert "10 already on the banner, plus 50 pulls spent this run" in group["pills"][0]["tooltip"]
+        assert _row(weapon_line) == [100, "−", 50, "+", 3, "=", 53, "LOSS"]
+        assert weapon_line["pills"][2]["kind"] != "group"
 
     def test_refund_estimate_uses_the_normalized_pulls_not_the_raw_pity(self):
         # Refund estimation must use the ACTUAL pulls spent (10), not the
@@ -534,14 +532,100 @@ class TestPityCarryover:
         assert result["ok"] is False
         assert "must exceed" in result["error"]
 
-    def test_pulls_spent_exceeding_hard_pity_from_starting_point_is_an_error(self):
+    def test_pulls_spent_exceeding_hard_pity_becomes_a_conflict_not_a_decline(self):
         # 75 pity already on the weapon banner (hard pity 80) plus 10 more
-        # pulls spent would reach 85, past the hard cap, impossible.
+        # pulls spent would reach 85, past the hard cap: a genuine "did you
+        # mean total including existing pity" ambiguity, not a plain
+        # mistake, so this surfaces as a conflict to clarify, not a decline.
         params = {**BASELINE_PARAMS, "start_weapon_pity": 75}
         events = [_event(1, "weapon", "loss", 10, 0, pity_is_absolute=False)]
         result = reconcile(_blank(events=events), params, BASELINE_STATS)
         assert result["ok"] is False
-        assert "past its hard pity" in result["error"]
+        assert result["conflict"] is True
+        assert result["lines"] == []  # nothing precedes the conflict
+        assert len(result["conflicts"]) == 1
+        block = result["conflicts"][0]
+        assert block["banner"] == "weapon"
+        assert block["header"] == "For Weapon Attempt 1 of 1"
+        assert "You reported 10 pulls spent on the Weapon banner" in block["question"]
+        assert "Did you mean in total, including existing pity, you had spent 10 pulls" in block["question"]
+        group = block["pills"][0]
+        assert group["kind"] == "group" and group["color"] == "red"
+        assert [p["value"] for p in group["pills"]] == [10, "LOSS"]
+        assert group["pills"][0]["color"] == "red"
+        assert group["pills"][1]["color"] == "red"
+
+    def test_conflict_preserves_resolved_pills_for_events_before_it(self):
+        # A character win is fully resolvable and comes first; the weapon
+        # loss after it is the conflict. The character's pills must still
+        # render normally, only the weapon gets flagged.
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 75}
+        events = [
+            _event(1, "character", "win", 20, 0),
+            _event(2, "weapon", "loss", 10, 0, pity_is_absolute=False),
+        ]
+        result = reconcile(_blank(events=events), params, BASELINE_STATS)
+        assert result["ok"] is False
+        assert result["conflict"] is True
+        char_line = next(l for l in result["lines"] if l["label"] == "Character Run 1 (obtained 1 of 1)")
+        assert _row(char_line) == [100, "−", 20, "+", 0, "=", 80, "WIN"]
+        assert len(result["conflicts"]) == 1
+        assert result["conflicts"][0]["banner"] == "weapon"
+
+    def test_multiple_conflicts_across_both_banners_are_all_reported_at_once(self):
+        # Both the character's and the weapon's first events are
+        # individually impossible; both must be surfaced together as two
+        # separate clarifying questions, not just the first one found.
+        params = {**BASELINE_PARAMS, "start_char_pity": 85, "start_weapon_pity": 75}
+        events = [
+            _event(1, "character", "win", 10, 0, pity_is_absolute=False),   # 85+10=95 > 90
+            _event(2, "weapon", "loss", 10, 0, pity_is_absolute=False),     # 75+10=85 > 80
+        ]
+        result = reconcile(_blank(events=events), params, BASELINE_STATS)
+        assert result["ok"] is False
+        assert len(result["conflicts"]) == 2
+        assert {c["banner"] for c in result["conflicts"]} == {"character", "weapon"}
+        assert result["conflicts"][0]["header"] == "For Character Attempt 1 of 1"
+        assert result["conflicts"][1]["header"] == "For Weapon Attempt 1 of 1"
+
+    def test_pulls_spent_exceeding_hard_pity_by_itself_is_a_flat_error_not_a_conflict(self):
+        # 95 pulls spent, hard pity 90: this is impossible under EITHER
+        # reading, no single attempt can ever take more pulls than hard
+        # pity allows, existing carryover pity or not. Asking "did you mean
+        # it as a total including existing pity" would be pointless here,
+        # that reading (ending pity 95) is just as invalid; this must be a
+        # flat, unrecoverable error, never routed through the conflict UI.
+        # A non-first event always starts from 0 (a reset), so this is also
+        # the only way a later attempt in a sequence can ever be invalid.
+        events = [
+            _event(1, "character", "win", 20, 0),
+            _event(2, "character", "loss", 95, 0, pity_is_absolute=False),  # 95 alone > 90
+            _event(3, "character", "win", 15, 0),
+        ]
+        extracted = _blank(events=events, additional_character_copies_wanted=2)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is False
+        assert "conflicts" not in result
+        assert "out of range 0-90" in result["error"]
+
+    def test_conflict_attempt_numbering_reflects_total_attempts_but_stays_on_the_first(self):
+        # A conflict can only ever land on a banner's FIRST event: pity
+        # resets to 0 after every outcome, so only the first event can ever
+        # carry nonzero starting pity to be ambiguous about. Three character
+        # attempts total, the first one conflicting: the header must say
+        # "1 of 3", reflecting the total while still naming the first.
+        params = {**BASELINE_PARAMS, "start_char_pity": 85}
+        events = [
+            _event(1, "character", "loss", 10, 0, pity_is_absolute=False),  # 85+10=95 > 90, 10 <= 90
+            _event(2, "character", "loss", 20, 0),
+            _event(3, "character", "win", 15, 0),
+        ]
+        extracted = _blank(events=events, additional_character_copies_wanted=2)
+        result = reconcile(extracted, params, BASELINE_STATS)
+        assert result["ok"] is False
+        assert len(result["conflicts"]) == 1
+        assert result["conflicts"][0]["header"] == "For Character Attempt 1 of 3"
+        assert result["conflicts"][0]["question"].startswith("You reported 10 pulls spent")
 
     def test_loss_on_an_already_guaranteed_banner_is_an_error(self):
         # A guaranteed next 5-star cannot lose the 50/50; a "loss" reported
