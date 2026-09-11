@@ -711,6 +711,17 @@ def build_result_line(total_pulls, success_rate):
     }
 
 
+def build_spending_tier_line(label, total_pulls, success_rate):
+    """One of advisor.py's three pre-computed spending tiers (F2P /
+    spend-if-you-want / guaranteed), rendered as its own labeled pill line
+    so each figure is a real receipt the model narrates, not a claim it
+    invents in prose."""
+    return {
+        "label": label,
+        "pills": [_pill("result", f"{total_pulls} pulls → {success_rate}", "light_green", "simulated")],
+    }
+
+
 def build_agent_cycle_line(cycle_number, total_pulls, success_rate):
     """A further scenario the advisor's own agentic loop chose to explore
     beyond the guaranteed pre-run, appended once advisor.py has actually run

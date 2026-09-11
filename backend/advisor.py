@@ -17,7 +17,9 @@ from openai import OpenAI
 
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
-from session_state import build_agent_cycle_line, build_result_line, reconcile, remaining_goal_text
+from session_state import (
+    build_agent_cycle_line, build_result_line, build_spending_tier_line, reconcile, remaining_goal_text,
+)
 from simulation import run_simulation_verbose
 
 # Fewer trials than the main endpoint: the advisor may run several sims per
@@ -28,6 +30,17 @@ MAX_TOOL_CALLS = 4
 # guard against a question the model misreads as branching far more than it
 # actually does; extras beyond this are dropped, not rejected outright.
 MAX_SCENARIOS = 4
+
+# The "spend if you really want it" tier's target: comfortably likely
+# without paying for a full guarantee. Below this, the F2P figure already
+# covers it and there's nothing to upsell; above it just starts eating into
+# the guaranteed tier's territory for diminishing return.
+MODERATE_SPEND_TARGET = 0.85
+# A reduced trial count for the tier search's own probing calls: it only
+# needs to find roughly the right pull count, not publication precision,
+# and this runs several times per answer. The pull count it lands on is
+# always re-confirmed with a full ADVISOR_TRIALS run before being shown.
+TIER_SEARCH_TRIALS = 800
 
 # Every call in this module was left at the API default (1.0, its max) until
 # a live-testing session caught the model citing a percentage in prose with
@@ -315,6 +328,128 @@ def _condense(stats):
     }
 
 
+def _success_pct(stats):
+    return float(stats["success_rate"].rstrip("%"))
+
+
+def _guaranteed_pulls_for_banner(hard_pity, start_pity, start_guarantee, copies_needed):
+    """Worst-case pulls to obtain `copies_needed` more of this banner's
+    featured item using ONLY the hard-pity mechanic, never luck: pity
+    always forces a 5-star by hard_pity pulls at the latest, and guarantee
+    (already active, or triggered by a 50/50 loss) forces the very next
+    5-star to be the featured one. The first copy uses this banner's actual
+    current pity/guarantee; a win always resets both to 0/False, so every
+    copy after the first starts completely fresh, worst case a lost 50/50
+    at hard pity followed by a guaranteed win at hard pity again."""
+    if copies_needed <= 0:
+        return 0
+    first = (hard_pity - start_pity) if start_guarantee else (hard_pity - start_pity) + hard_pity
+    rest = (copies_needed - 1) * 2 * hard_pity
+    return first + rest
+
+
+def _guaranteed_scenario_pulls(scenario, baseline_params):
+    """Total pulls that mathematically guarantee the scenario's entire
+    remaining goal, both banners, worst case luck. Not a probability, hard
+    pity forces this regardless of chance, which is exactly what a big
+    spender wants to know: the number that removes risk entirely."""
+    char_pulls = _guaranteed_pulls_for_banner(
+        baseline_params["char_pity_config"]["hard_pity"],
+        scenario["start_char_pity"], scenario["start_char_guarantee"],
+        scenario["remaining_characters"],
+    )
+    weapon_pulls = _guaranteed_pulls_for_banner(
+        baseline_params["weapon_pity_config"]["hard_pity"],
+        scenario["start_weapon_pity"], scenario["start_weapon_guarantee"],
+        scenario["remaining_weapons"],
+    )
+    return char_pulls + weapon_pulls
+
+
+def _extra_pulls_for_target_rate(run_params, target_rate, extra_cap):
+    """Smallest additional total_pulls (beyond run_params['total_pulls'])
+    whose simulated success rate reaches target_rate, via a coarse search
+    at a reduced trial count for speed. 0 if the baseline already clears
+    it. extra_cap is a known-safe upper bound (the caller passes the extra
+    pulls needed to fully guarantee the goal, which by definition clears
+    any probability target below 100%), so this always terminates with a
+    real answer rather than searching forever."""
+    baseline_total = run_params["total_pulls"]
+    target_pct = target_rate * 100
+
+    def _rate(extra):
+        stats = run_simulation_verbose(
+            **{**run_params, "total_pulls": max(baseline_total + extra, 1)}, trials=TIER_SEARCH_TRIALS,
+        )
+        return _success_pct(stats)
+
+    if extra_cap <= 0 or _rate(0) >= target_pct:
+        return 0
+
+    lo, hi = 0, extra_cap
+    for _ in range(10):
+        mid = (lo + hi) // 2
+        if mid == lo:
+            break
+        if _rate(mid) >= target_pct:
+            hi = mid
+        else:
+            lo = mid
+    return hi
+
+
+def _spending_tiers(scenario, run_params, baseline_params, primary_result):
+    """Pre-compute the two further spending tiers beyond the F2P result
+    already simulated: the smallest top-up that reaches a comfortably-safe
+    success rate, and the pull count that mathematically guarantees the
+    remaining goal outright. Everything here is either a real simulation
+    result or closed-form hard-pity arithmetic, never a model guess, so the
+    interpretation model can only narrate figures that are actually true.
+
+    Returns (tiers, runs) where tiers is a list of
+    {"key", "label", "total_pulls", "success_rate", "extra_pulls"} dicts
+    (F2P always included; the other two omitted when they'd just repeat a
+    figure already shown, e.g. F2P already clears the guarantee), and runs
+    is every further simulation actually executed, for the UI receipts."""
+    runs = []
+    tiers = [{
+        "key": "f2p", "label": "F2P (current budget)",
+        "total_pulls": run_params["total_pulls"], "success_rate": primary_result["success_rate"],
+        "extra_pulls": 0,
+    }]
+
+    guaranteed_pulls = _guaranteed_scenario_pulls(scenario, baseline_params)
+    guaranteed_extra = max(guaranteed_pulls - run_params["total_pulls"], 0)
+
+    moderate_extra = _extra_pulls_for_target_rate(run_params, MODERATE_SPEND_TARGET, guaranteed_extra)
+    if moderate_extra > 0:
+        moderate_result = _condense(run_simulation_verbose(
+            **{**run_params, "total_pulls": run_params["total_pulls"] + moderate_extra}, trials=ADVISOR_TRIALS,
+        ))
+        runs.append(moderate_result)
+        tiers.append({
+            "key": "moderate", "label": "Spend If You Really Want It",
+            "total_pulls": run_params["total_pulls"] + moderate_extra,
+            "success_rate": moderate_result["success_rate"], "extra_pulls": moderate_extra,
+        })
+
+    if guaranteed_extra > 0:
+        guaranteed_result = _condense(run_simulation_verbose(
+            **{**run_params, "total_pulls": guaranteed_pulls}, trials=ADVISOR_TRIALS,
+        ))
+        runs.append(guaranteed_result)
+        tiers.append({
+            "key": "whale", "label": "Guaranteed (Big Spender)",
+            "total_pulls": guaranteed_pulls,
+            "success_rate": guaranteed_result["success_rate"], "extra_pulls": guaranteed_extra,
+        })
+    # guaranteed_extra <= 0 means the current F2P budget already meets or
+    # exceeds the pull count that guarantees the goal outright: nothing
+    # further to show, the F2P tier above already IS the guaranteed one.
+
+    return tiers, runs
+
+
 def _pill_text(pill):
     """One pill's value as text, recursing into a group pill's own pills
     and wrapping them in parentheses the way the UI renders them."""
@@ -454,11 +589,17 @@ SYSTEM_PROMPT = (
     "You are a blunt, no-fluff gacha pull advisor. The user has a baseline "
     "simulation result and is asking an open-ended follow-up. Use the run_simulation "
     "tool to actually test any what-if instead of guessing, then compare the result "
-    "to the baseline and answer in 2 to 4 short sentences. Always cite the specific "
-    "success rates you got from the tool (for example, at 220 pulls it is 71 percent) "
-    "so your answer is grounded in the numbers. Be honest: if the change barely helps "
-    "or the odds are poor, say so, and do not push the user to spend more than they "
-    "need to. Respect the stated goal and starting conditions: do not assume the user "
+    "to the baseline and answer in short, direct sentences, never just a number followed "
+    "by an offer to explore more, that tells the reader nothing they didn't already know. "
+    "When given F2P / spend-if-you-really-want-it / guaranteed spending tiers, address each "
+    "one given to you by name in a sentence or so and say plainly which one you'd actually "
+    "recommend for someone in this spot and why, don't just list three numbers and stop; "
+    "otherwise (a plain what-if with no tiers given) 2 to 4 short sentences is still right. "
+    "Always cite the specific success rates you got from the tool (for example, at 220 pulls "
+    "it is 71 percent) so your answer is grounded in the numbers. Be honest: if a tier barely "
+    "helps or the odds are poor even fully spent, say so, and do not push the user to spend "
+    "more than they need to; if F2P is already comfortable, say that plainly and don't manufacture "
+    "urgency to spend anyway. Respect the stated goal and starting conditions: do not assume the user "
     "wants a character or weapon copy they did not include. If the goal is already a "
     "single copy, there is nothing to trim, so focus on more pulls or waiting. Pity "
     "for a banner resets to 0 the instant a 5-star of that banner's type is obtained, "
@@ -879,35 +1020,76 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         primary_result = _condense(run_simulation_verbose(**run_params, trials=ADVISOR_TRIALS))
         runs.append(primary_result)
         lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
+
+        # Three spending tiers, pre-computed here rather than left to the
+        # model: F2P (the primary result above, current budget as-is), a
+        # comfortably-safe top-up (MODERATE_SPEND_TARGET), and the pull
+        # count that mathematically guarantees the remaining goal via hard
+        # pity. Every figure the model gets to cite already came from a
+        # real run or closed-form arithmetic, never a guess.
+        tiers, tier_runs = _spending_tiers(scenario, run_params, baseline_params, primary_result)
+        runs.extend(tier_runs)
+        for tier in tiers[1:]:
+            lines = lines + [build_spending_tier_line(tier["label"], tier["total_pulls"], tier["success_rate"])]
+
         breakdown = {"status": "ok", "lines": lines}
         if reconciled.get("annotations"):
             breakdown["annotations"] = reconciled["annotations"]
         remaining = remaining_goal_text(scenario["remaining_characters"], scenario["remaining_weapons"])
+
+        tier_facts = [
+            f"F2P (spending nothing further, your current budget as reported): "
+            f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
+            f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
+            f"most common failure state {primary_result['most_common_failure_state']}."
+        ]
+        moderate = next((t for t in tiers if t["key"] == "moderate"), None)
+        whale = next((t for t in tiers if t["key"] == "whale"), None)
+        if moderate:
+            tier_facts.append(
+                f"Spend if you really want it (worth it if this character or weapon matters to you or "
+                f"your build, not required): {moderate['total_pulls']} total pulls (an extra "
+                f"{moderate['extra_pulls']} beyond your current budget), success rate "
+                f"{moderate['success_rate']}, comfortably likely without paying for a full guarantee."
+            )
+        if whale:
+            tier_facts.append(
+                f"Guaranteed, for a big spender or content creator who wants zero risk: "
+                f"{whale['total_pulls']} total pulls (an extra {whale['extra_pulls']} beyond your "
+                f"current budget), success rate {whale['success_rate']}. This is not a probability, "
+                f"hard pity mathematically forces this outcome regardless of luck at that many pulls."
+            )
+        if not moderate and not whale:
+            tier_facts.append(
+                "Your current budget already meets or exceeds the pull count that guarantees this "
+                "goal outright via hard pity, regardless of luck: there is nothing further worth "
+                "spending on, this is as safe as it gets."
+            )
+
         context = (
             f"Verified session state (already reconciled from the question, treat as fact "
             f"and do not restate it differently): {lines_text} "
             f"Original full goal was {goal_description} (goal {goal_label}), but what actually "
-            f"still remains to obtain, after the events above, is: {remaining}. The simulation "
-            f"below was run for exactly that remaining goal, not the original one; describe "
+            f"still remains to obtain, after the events above, is: {remaining}. The figures "
+            f"below were run for exactly that remaining goal, not the original one; describe "
             f"success and failure only in terms of what remains, anything not listed there is "
             f"already obtained and must not be described as still needed, at risk, or a "
             f"possible failure. "
-            f"A simulation on this exact verified state has ALREADY been run for you: "
-            f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
-            f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
-            f"most common failure state {primary_result['most_common_failure_state']}. Use this "
-            f"as your primary answer; cite these exact numbers. Never state a total_pulls figure "
-            f"or a success rate in your answer that you did not get back from an actual "
-            f"run_simulation call; if you want to mention a further scenario, call the tool for "
-            f"it first. Only call run_simulation again if the question explicitly asks about a "
-            f"further, different scenario, and if so derive any different total_pulls only by "
-            f"adding to or subtracting from the {run_params['total_pulls']} figure above, never "
-            f"by recomputing it from the raw figures in the question yourself. Any "
-            f"start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee, or "
-            f"strategy (copy counts) you pass on such a call is ignored: the verified state and the "
-            f"remaining goal above ({remaining}) are used regardless, so do not bother varying those. "
-            f"'{remaining}' already accounts for everything obtained above; it is not a total to "
-            f"re-simulate from scratch."
+            f"The following spending tiers have ALREADY been run or computed for you, address "
+            f"the ones given below by name (F2P, spend if you really want it, guaranteed), each "
+            f"in a sentence or so, using only these exact figures; never invent a tier, a pull "
+            f"count, or a success rate that isn't listed here. Skip a tier only if it is genuinely "
+            f"identical to one you already covered. " + " ".join(tier_facts) + " "
+            f"Never state a total_pulls figure or a success rate in your answer that you did not "
+            f"get from the figures above or an actual run_simulation call; if you want to explore "
+            f"a further, different scenario the question specifically asks about, call the tool "
+            f"for it first, deriving any different total_pulls only by adding to or subtracting "
+            f"from the {run_params['total_pulls']} figure above, never by recomputing it from the "
+            f"raw figures in the question yourself. Any start_char_pity, start_char_guarantee, "
+            f"start_weapon_pity, start_weapon_guarantee, or strategy (copy counts) you pass on such "
+            f"a call is ignored: the verified state and the remaining goal above ({remaining}) are "
+            f"used regardless, so do not bother varying those. '{remaining}' already accounts for "
+            f"everything obtained above; it is not a total to re-simulate from scratch."
         )
     elif reconciled.get("applies"):
         # The question described an event sequence, but it could not be
