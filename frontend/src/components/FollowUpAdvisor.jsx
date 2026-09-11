@@ -204,9 +204,9 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
                 type="button"
                 onClick={handleSubmitClarifications}
                 disabled={loading || Object.values(conflictAnswers).every(a => !a.trim())}
-                className="text-sm font-medium px-4 py-2 rounded-lg bg-red-700 hover:bg-red-600 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
+                className="text-sm font-medium px-4 py-2 rounded-lg bg-violet-600 hover:bg-violet-500 disabled:opacity-40 disabled:cursor-not-allowed text-white transition-colors"
               >
-                {loading ? 'Thinking…' : 'Submit Answers'}
+                {loading ? 'Thinking…' : 'Submit Clarification'}
               </button>
             ) : (
               <p className="text-sm text-slate-300 leading-relaxed whitespace-pre-wrap">{answer}</p>
