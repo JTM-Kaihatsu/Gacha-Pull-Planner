@@ -20,13 +20,18 @@ function Pill({ pill }) {
   // plain light border and no background of its own, so a two-part figure
   // like "(ending pity - starting pity)" reads as one bracketed unit.
   if (pill.kind === 'group') {
+    // A red group flags a pity conflict: the reported figure can't be
+    // reconciled with the banner's starting pity, distinct from the plain
+    // grey border used for an ordinary, non-flagged breakdown.
+    const groupBorder = pill.color === 'red' ? 'border-red-700/60' : 'border-slate-600'
+    const parenColor = pill.color === 'red' ? 'text-red-500' : 'text-slate-500'
     return (
-      <span className="inline-flex items-center gap-1 rounded border border-slate-600 px-1.5 py-1">
-        <span className="text-xs font-mono text-slate-500">(</span>
+      <span className={`inline-flex items-center gap-1 rounded border ${groupBorder} px-1.5 py-1`}>
+        <span className={`text-xs font-mono ${parenColor}`}>(</span>
         {pill.pills.map((p, i) => (
           <Pill key={i} pill={p} />
         ))}
-        <span className="text-xs font-mono text-slate-500">)</span>
+        <span className={`text-xs font-mono ${parenColor}`}>)</span>
       </span>
     )
   }
@@ -135,7 +140,40 @@ function StartingSituation({ baseline }) {
   )
 }
 
-export default function ParsedSituation({ breakdown, baseline }) {
+// A single {"banner", "attempt_number"} pity conflict, matching exactly one
+// clarifying question. Keyed this way (not by array index) so an answer
+// survives the conflicts array being rebuilt by a fresh re-extraction.
+export function conflictKey(conflict) {
+  return `${conflict.banner}:${conflict.attempt_number}`
+}
+
+// One "did you mean total including existing pity" block: the header
+// (styled like Starting Situation / Parsed Situation above it), the
+// red-flagged pills, the clarifying question, and a textarea for the
+// user's answer. Purely controlled: FollowUpAdvisor owns the answer text
+// and the eventual submission, this just renders one conflict.
+function ConflictBlock({ conflict, answer, onAnswerChange }) {
+  return (
+    <div className="mb-4 last:mb-0">
+      <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-1.5">{conflict.header}</div>
+      <div className="flex flex-wrap items-center gap-1.5 pl-3 mb-2">
+        {conflict.pills.map((pill, i) => (
+          <Pill key={i} pill={pill} />
+        ))}
+      </div>
+      <p className="text-xs text-red-300 pl-3 mb-2">{conflict.question}</p>
+      <textarea
+        value={answer}
+        onChange={e => onAnswerChange(e.target.value)}
+        placeholder="Type your answer here…"
+        rows={2}
+        className="w-full bg-slate-900/60 border border-red-800/50 rounded-lg px-3 py-2 text-sm text-white placeholder-slate-600 focus:outline-none focus:border-red-500 resize-none"
+      />
+    </div>
+  )
+}
+
+export default function ParsedSituation({ breakdown, baseline, conflictAnswers, onConflictAnswerChange }) {
   const startingSituation = baseline && <StartingSituation baseline={baseline} />
 
   if (!breakdown) return startingSituation || null
@@ -147,6 +185,36 @@ export default function ParsedSituation({ breakdown, baseline }) {
         <div className="bg-red-950/30 border border-red-800/50 rounded-lg px-3 py-2 mb-3">
           <div className="text-[11px] text-red-400 uppercase tracking-wider mb-1">Parsed Situation</div>
           <p className="text-xs text-red-300">{breakdown.message}</p>
+        </div>
+      </>
+    )
+  }
+
+  if (breakdown.status === 'conflict') {
+    return (
+      <>
+        {startingSituation}
+        {/* Whatever preceded the first conflict is already fully resolved,
+            not in question, so it renders exactly like a normal Parsed
+            Situation panel; empty when the very first event conflicts. */}
+        {breakdown.lines.length > 0 && (
+          <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
+            <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Parsed Situation</div>
+            {breakdown.lines.map((line, i) => <Line key={i} line={line} />)}
+          </div>
+        )}
+        <div className="bg-red-950/20 border border-red-800/40 rounded-lg px-3 py-3 mb-3">
+          {breakdown.conflicts.map(conflict => {
+            const key = conflictKey(conflict)
+            return (
+              <ConflictBlock
+                key={key}
+                conflict={conflict}
+                answer={conflictAnswers?.[key] || ''}
+                onAnswerChange={value => onConflictAnswerChange?.(conflict, value)}
+              />
+            )
+          })}
         </div>
       </>
     )

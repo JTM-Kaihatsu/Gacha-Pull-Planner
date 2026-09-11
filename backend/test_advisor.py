@@ -731,6 +731,207 @@ class TestBranchingScenarios:
         assert breakdown["status"] == "error"
 
 
+def _ps_event(order, banner, outcome, pulls_spent, refunds=None):
+    """An event reported as pulls SPENT this run ('after 60 pulls'), not an
+    absolute pity counter value. pity_is_absolute must be explicit here
+    (unlike _event, which relies on the True default) since these tests
+    are specifically about the pulls-spent branch of pity carryover."""
+    return {"event_order": order, "banner_type": banner, "outcome": outcome,
+            "pity_at_outcome": pulls_spent, "pity_is_absolute": False, "refund_count": refunds}
+
+
+def _abs_event(order, banner, outcome, pity, refunds=None):
+    return {"event_order": order, "banner_type": banner, "outcome": outcome,
+            "pity_at_outcome": pity, "pity_is_absolute": True, "refund_count": refunds}
+
+
+class TestPityConflictClarification:
+    """A pulls-spent event whose implied ending pity exceeds the banner's
+    hard pity is a genuine ambiguity (did the reported count already
+    include existing pity?), not a plain parse failure: it's surfaced as a
+    conflict for the user to resolve, and clarifications resolve it via one
+    retry extraction rather than an automatic guess."""
+
+    def test_conflict_is_returned_immediately_without_auto_retry(self, monkeypatch):
+        # Weapon starts at 22 pity (hard pity 80); "won after 60 pulls" would
+        # put it at 82, past hard pity, so this can't be pulls-spent as-is.
+        event = _ps_event(1, "weapon", "win", 60)
+        fake = _FakeClient([_extraction_response(events=[event])])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I won the weapon after 60 pulls, how am I doing?",
+        )
+
+        assert answer == ""
+        assert runs == []
+        assert breakdown["status"] == "conflict"
+        assert len(breakdown["conflicts"]) == 1
+        conflict = breakdown["conflicts"][0]
+        assert conflict["header"] == "For Weapon Attempt 1 of 1"
+        assert conflict["banner"] == "weapon"
+        assert "60 pulls spent" in conflict["question"] or "60 pulls" in conflict["question"]
+        # A genuine ambiguity only a human can resolve: no automatic retry.
+        assert len(fake.calls) == 1
+
+    def test_clarification_confirming_the_total_includes_existing_pity(self, monkeypatch):
+        conflict_event = _ps_event(1, "weapon", "win", 60)
+        resolved_event = _abs_event(1, "weapon", "win", 60)
+        fake = _FakeClient([
+            _extraction_response(events=[conflict_event]),
+            _extraction_response(events=[resolved_event]),
+            _response(_msg(content="With the guarantee your weapon odds look fine.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I won the weapon after 60 pulls, how am I doing?",
+            clarifications=[{"banner": "weapon", "attempt_number": 1,
+                              "answer": "60 total including existing pity"}],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER CLARIFICATION: ",
+             "text": "60 total pulls were used, including existing pity."},
+        ]
+        assert answer == "With the guarantee your weapon odds look fine."
+        assert len(fake.calls) == 3   # extraction, retry, final answer
+
+    def test_clarification_correcting_the_starting_situation_overrides_pity_for_this_run_only(self, monkeypatch):
+        # Same event reported unchanged; the retry instead corrects the
+        # banner's starting pity itself (22 -> 10), which must actually be
+        # applied before re-reconciling: 10 + 60 = 70 is under the 80 hard
+        # pity, so this should resolve, not conflict again.
+        conflict_event = _ps_event(1, "weapon", "win", 60)
+        fake = _FakeClient([
+            _extraction_response(events=[conflict_event]),
+            _extraction_response(
+                events=[conflict_event],
+                starting_situation_corrections=[
+                    {"banner": "weapon", "corrected_pity": 10, "corrected_guarantee": None},
+                ],
+            ),
+            _response(_msg(content="Looks solid with the corrected pity.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        original_baseline_params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        params = dict(original_baseline_params)
+        stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I won the weapon after 60 pulls, how am I doing?",
+            clarifications=[{"banner": "weapon", "attempt_number": 1,
+                              "answer": "actually my weapon pity was only 10, not 22"}],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER MODIFICATION TO INITIAL SITUATION: ",
+             "text": "Weapon banner starting pity 10."},
+        ]
+        assert answer == "Looks solid with the corrected pity."
+        # The correction applied only to this run, never mutating the dict
+        # the caller passed in (the overall simulation/visualization above
+        # must keep the pity actually entered in the form).
+        assert params == original_baseline_params
+
+    def test_clarification_correcting_the_prompt_number_resolves_the_conflict(self, monkeypatch):
+        conflict_event = _ps_event(1, "weapon", "win", 60)
+        corrected_event = _ps_event(1, "weapon", "win", 40)
+        fake = _FakeClient([
+            _extraction_response(events=[conflict_event]),
+            _extraction_response(events=[corrected_event]),
+            _response(_msg(content="40 pulls looks fine.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I won the weapon after 60 pulls, how am I doing?",
+            clarifications=[{"banner": "weapon", "attempt_number": 1,
+                              "answer": "sorry, I meant 40 pulls, not 60"}],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER MODIFICATION TO PROMPT: ",
+             "text": "Weapon banner attempt 1 of 1: sorry, I meant 40 pulls, not 60"},
+        ]
+        assert answer == "40 pulls looks fine."
+
+    def test_multiple_conflicts_each_get_their_own_annotation_in_order(self, monkeypatch):
+        char_conflict = _ps_event(1, "character", "win", 85)
+        weapon_conflict = _ps_event(2, "weapon", "loss", 60)
+        char_resolved = _abs_event(1, "character", "win", 85)
+        weapon_resolved = _abs_event(2, "weapon", "loss", 60)
+
+        fake = _FakeClient([
+            _extraction_response(events=[char_conflict, weapon_conflict]),
+            _extraction_response(events=[char_resolved, weapon_resolved]),
+            _response(_msg(content="Both banners check out now.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        params = {**BASELINE_PARAMS, "start_char_pity": 20, "start_weapon_pity": 22}
+        stats = {**BASELINE_STATS, "start_char_pity": 20, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "I won the character after 85 pulls and lost the weapon after 60 pulls, how am I doing?",
+            clarifications=[
+                {"banner": "character", "attempt_number": 1, "answer": "85 total including existing pity"},
+                {"banner": "weapon", "attempt_number": 1, "answer": "60 total including existing pity"},
+            ],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER CLARIFICATION: ",
+             "text": "85 total pulls were used, including existing pity."},
+            {"label": "USER CLARIFICATION: ",
+             "text": "60 total pulls were used, including existing pity."},
+        ]
+
+    def test_branching_question_with_an_internal_conflict_falls_back_to_generic_decline(self, monkeypatch):
+        # The rich conflict-clarification UI is single-scenario-only; a
+        # branching question with a conflicting branch falls back to the
+        # ordinary decline path instead, exactly like any other
+        # unreconcilable branching question.
+        conflict_event = _ps_event(1, "weapon", "win", 60)
+        branching = lambda: _branching_extraction_response(
+            "If I win the weapon pull",
+            {"events": [conflict_event]},
+            [{"condition_label": "If I lose the weapon pull", **_scenario_fields(events=[])}],
+        )
+        fake = _FakeClient([branching(), branching()])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats,
+            "If I win the weapon pull after 60 pulls, what next? If I lose, what then?",
+        )
+
+        assert breakdown["status"] == "error"
+        assert answer == PARSE_FAILURE_MESSAGE
+
+
 class TestToolExecutor:
     def test_valid_run(self, monkeypatch):
         monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
