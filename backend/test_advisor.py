@@ -309,6 +309,10 @@ class TestSessionStateIntegration:
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+        # The spending tiers (see TestSpendingTiers) are their own further
+        # simulations layered on top of the pre-run this test is about;
+        # neutralized here so len(runs) still isolates just the pre-run.
+        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], []))
 
         answer, runs, breakdown = run_advisor(
             params, stats,
@@ -512,6 +516,9 @@ class TestSessionStateIntegration:
 
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+        # Neutralized so the spending tiers' own further simulations (see
+        # TestSpendingTiers) don't shift the indices this test relies on.
+        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], []))
 
         answer, runs, breakdown = run_advisor(
             params, stats,
@@ -743,6 +750,145 @@ def _ps_event(order, banner, outcome, pulls_spent, refunds=None):
 def _abs_event(order, banner, outcome, pity, refunds=None):
     return {"event_order": order, "banner_type": banner, "outcome": outcome,
             "pity_at_outcome": pity, "pity_is_absolute": True, "refund_count": refunds}
+
+
+def _tier_fake_sim(guaranteed_at, **overrides):
+    """A run_simulation_verbose stand-in whose success rate scales linearly
+    with total_pulls up to guaranteed_at (where it hits ~100%), mirroring
+    the real hard-pity guarantee this test simulation itself models: fast,
+    deterministic, and internally consistent with _guaranteed_pulls_for_banner
+    so a test can predict exactly where the moderate/whale tiers should land."""
+    def _fake(**kw):
+        pct = min(99.99, kw["total_pulls"] / guaranteed_at * 100)
+        base = {
+            "success_rate": f"{pct:.2f}%", "initial_pulls": kw["total_pulls"],
+            "desired_characters": 0, "desired_weapons": 1,
+            "avg_leftover_pulls_on_success": 10, "most_common_failure_state": None,
+        }
+        base.update(overrides)
+        return base
+    return _fake
+
+
+class TestSpendingTiers:
+    """The three pre-computed spending tiers (F2P / spend-if-you-really-
+    want-it / guaranteed) advisor.py hands the interpretation model instead
+    of letting it invent its own follow-up numbers."""
+
+    def test_guaranteed_pulls_for_banner_without_existing_guarantee(self):
+        # Worst case: lose the 50/50 at hard pity, then a guaranteed win
+        # takes up to another hard pity's worth of pulls.
+        assert advisor._guaranteed_pulls_for_banner(80, 0, False, 1) == 160
+        assert advisor._guaranteed_pulls_for_banner(80, 20, False, 1) == 60 + 80
+
+    def test_guaranteed_pulls_for_banner_with_existing_guarantee(self):
+        # Already guaranteed: no 50/50 risk at all, just reach hard pity.
+        assert advisor._guaranteed_pulls_for_banner(90, 30, True, 1) == 60
+
+    def test_guaranteed_pulls_for_banner_multiple_copies(self):
+        # The first copy uses the real starting state; a win always resets
+        # both pity and guarantee, so every copy after it starts fresh.
+        assert advisor._guaranteed_pulls_for_banner(80, 0, False, 2) == 160 + 160
+
+    def test_guaranteed_pulls_for_banner_zero_copies_needed(self):
+        assert advisor._guaranteed_pulls_for_banner(80, 50, False, 0) == 0
+
+    def test_guaranteed_scenario_pulls_sums_both_banners_independently(self):
+        scenario = {
+            "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 1,
+            "start_weapon_pity": 0, "start_weapon_guarantee": True, "remaining_weapons": 1,
+        }
+        # Character (not guaranteed): (90-0)+90 = 180. Weapon (guaranteed): 80-0 = 80.
+        assert advisor._guaranteed_scenario_pulls(scenario, BASELINE_PARAMS) == 260
+
+    def test_extra_pulls_for_target_rate_is_zero_when_baseline_already_clears_it(self, monkeypatch):
+        monkeypatch.setattr(advisor, "run_simulation_verbose",
+                             lambda **kw: {"success_rate": "90.00%"})
+        run_params = {**BASELINE_PARAMS, "total_pulls": 100}
+        assert advisor._extra_pulls_for_target_rate(run_params, 0.85, extra_cap=200) == 0
+
+    def test_extra_pulls_for_target_rate_is_zero_when_cap_is_not_positive(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(advisor, "run_simulation_verbose",
+                             lambda **kw: calls.append(kw["total_pulls"]) or {"success_rate": "10.00%"})
+        run_params = {**BASELINE_PARAMS, "total_pulls": 100}
+        assert advisor._extra_pulls_for_target_rate(run_params, 0.85, extra_cap=0) == 0
+        assert calls == []   # short-circuits: a non-positive cap can't be searched at all
+
+    def test_extra_pulls_for_target_rate_converges_on_the_true_crossing_point(self, monkeypatch):
+        # Linear model: success rate equals total_pulls directly (capped at
+        # 100), so 85% requires exactly 85 total pulls, 15 more than the
+        # 70-pull baseline. The search should land on exactly that.
+        monkeypatch.setattr(advisor, "run_simulation_verbose",
+                             lambda **kw: {"success_rate": f"{min(99.99, kw['total_pulls']):.2f}%"})
+        run_params = {**BASELINE_PARAMS, "total_pulls": 70}
+        assert advisor._extra_pulls_for_target_rate(run_params, 0.85, extra_cap=100) == 15
+
+    def test_spending_tiers_includes_moderate_and_whale_when_baseline_is_low(self, monkeypatch):
+        # Weapon only, no existing pity/guarantee, one copy needed:
+        # guaranteed pulls = (80-0)+80 = 160 via hard pity.
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+        scenario = {
+            "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 0,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False, "remaining_weapons": 1,
+        }
+        run_params = {**BASELINE_PARAMS, "total_pulls": 50, "strategy": [{"banner": "weapon", "copies": 1}]}
+        primary_result = {"success_rate": "31.25%"}
+
+        tiers, runs = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+
+        assert [t["key"] for t in tiers] == ["f2p", "moderate", "whale"]
+        assert tiers[0]["total_pulls"] == 50 and tiers[0]["extra_pulls"] == 0
+        # 85% of 160 = 136 total pulls, 86 more than the 50-pull baseline.
+        assert tiers[1]["total_pulls"] == 136 and tiers[1]["extra_pulls"] == 86
+        assert tiers[2]["total_pulls"] == 160 and tiers[2]["extra_pulls"] == 110
+        assert len(runs) == 2   # moderate confirmation + guaranteed confirmation
+
+    def test_spending_tiers_skips_moderate_and_whale_when_f2p_already_guarantees(self, monkeypatch):
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+        scenario = {
+            "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 0,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False, "remaining_weapons": 1,
+        }
+        run_params = {**BASELINE_PARAMS, "total_pulls": 200, "strategy": [{"banner": "weapon", "copies": 1}]}
+        primary_result = {"success_rate": "99.99%"}
+
+        tiers, runs = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+
+        assert [t["key"] for t in tiers] == ["f2p"]
+        assert runs == []
+
+    def test_run_advisor_surfaces_tier_lines_and_context_to_the_model(self, monkeypatch):
+        # End-to-end: the tier lines land in the breakdown for the UI, and
+        # the model's final call is told about them by name so it can't
+        # just regurgitate the F2P number and punt.
+        params = {**BASELINE_PARAMS, "total_pulls": 50,
+                  "strategy": [{"banner": "weapon", "copies": 1}]}
+        stats = {**BASELINE_STATS, "initial_pulls": 50, "desired_characters": 0, "desired_weapons": 1}
+        events = [_event(1, "weapon", "loss", 10, 0)]
+
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="Answer covering all three tiers.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I lost the weapon after 10 pulls, how am I doing?",
+        )
+
+        assert answer == "Answer covering all three tiers."
+        labels = [line["label"] for line in breakdown["lines"]]
+        assert "Spend If You Really Want It" in labels
+        assert "Guaranteed (Big Spender)" in labels
+        # The F2P pre-run plus the two tier confirmations, all tracked receipts.
+        assert len(runs) == 3
+
+        final_call_context = fake.calls[-1]["messages"][1]["content"]
+        assert "F2P" in final_call_context
+        assert "Spend if you really want it" in final_call_context
+        assert "Guaranteed, for a big spender" in final_call_context
 
 
 class TestPityConflictClarification:
