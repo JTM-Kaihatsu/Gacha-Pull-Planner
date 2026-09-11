@@ -588,21 +588,44 @@ class TestPityCarryover:
         assert result["conflicts"][0]["header"] == "For Character Attempt 1 of 1"
         assert result["conflicts"][1]["header"] == "For Weapon Attempt 1 of 1"
 
-    def test_conflict_attempt_numbering_reflects_multiple_pulls_on_one_banner(self):
-        # Three character attempts total; the second one (after a reset, so
-        # 0 starting pity) claims more pulls than hard pity allows outright.
-        # The header must say "2 of 3", not "1 of 1".
+    def test_pulls_spent_exceeding_hard_pity_by_itself_is_a_flat_error_not_a_conflict(self):
+        # 95 pulls spent, hard pity 90: this is impossible under EITHER
+        # reading, no single attempt can ever take more pulls than hard
+        # pity allows, existing carryover pity or not. Asking "did you mean
+        # it as a total including existing pity" would be pointless here,
+        # that reading (ending pity 95) is just as invalid; this must be a
+        # flat, unrecoverable error, never routed through the conflict UI.
+        # A non-first event always starts from 0 (a reset), so this is also
+        # the only way a later attempt in a sequence can ever be invalid.
         events = [
             _event(1, "character", "win", 20, 0),
-            _event(2, "character", "loss", 95, 0, pity_is_absolute=False),  # 0+95 > 90
+            _event(2, "character", "loss", 95, 0, pity_is_absolute=False),  # 95 alone > 90
             _event(3, "character", "win", 15, 0),
         ]
         extracted = _blank(events=events, additional_character_copies_wanted=2)
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is False
+        assert "conflicts" not in result
+        assert "out of range 0-90" in result["error"]
+
+    def test_conflict_attempt_numbering_reflects_total_attempts_but_stays_on_the_first(self):
+        # A conflict can only ever land on a banner's FIRST event: pity
+        # resets to 0 after every outcome, so only the first event can ever
+        # carry nonzero starting pity to be ambiguous about. Three character
+        # attempts total, the first one conflicting: the header must say
+        # "1 of 3", reflecting the total while still naming the first.
+        params = {**BASELINE_PARAMS, "start_char_pity": 85}
+        events = [
+            _event(1, "character", "loss", 10, 0, pity_is_absolute=False),  # 85+10=95 > 90, 10 <= 90
+            _event(2, "character", "loss", 20, 0),
+            _event(3, "character", "win", 15, 0),
+        ]
+        extracted = _blank(events=events, additional_character_copies_wanted=2)
+        result = reconcile(extracted, params, BASELINE_STATS)
+        assert result["ok"] is False
         assert len(result["conflicts"]) == 1
-        assert result["conflicts"][0]["header"] == "For Character Attempt 2 of 3"
-        assert result["conflicts"][0]["question"].startswith("You reported 95 pulls spent")
+        assert result["conflicts"][0]["header"] == "For Character Attempt 1 of 3"
+        assert result["conflicts"][0]["question"].startswith("You reported 10 pulls spent")
 
     def test_loss_on_an_already_guaranteed_banner_is_an_error(self):
         # A guaranteed next 5-star cannot lose the 50/50; a "loss" reported

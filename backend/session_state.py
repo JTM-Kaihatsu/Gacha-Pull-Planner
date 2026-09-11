@@ -92,16 +92,21 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
         if pity is not None:
             if not isinstance(pity, int) or pity < 0:
                 return f"event_order {event['event_order']}: pity_at_outcome ({pity}) cannot be negative"
-            # An absolute pity COUNTER can never exceed the hard pity, a hard
-            # physical constraint independent of anything carried over from
-            # before this conversation, so it's still checked outright here.
-            # A pulls-SPENT count's upper bound depends on how much pity
-            # that banner's specific event actually started from (0 unless
-            # it's that banner's first event with carryover pity), which
-            # only _normalize_pity_carryover knows; deferred there so a
-            # too-high pulls-spent count becomes a conflict to clarify
-            # rather than a flat validation failure here.
-            if event.get("pity_is_absolute", True) and pity > hard_pity:
+            # hard_pity bounds pity_at_outcome regardless of phrasing: an
+            # absolute pity COUNTER obviously can't exceed it, but neither
+            # can a pulls-SPENT count taken by itself, no single attempt can
+            # ever take more pulls than hard pity allows, independent of
+            # whatever pity carried over from before this conversation. This
+            # is a flat, unrecoverable error either way, not something a
+            # clarifying question could resolve: if the number itself is
+            # already too high to be a valid pity value under ANY reading,
+            # asking "did you mean it as a total including existing pity"
+            # is pointless, that reading would be just as invalid. Whether a
+            # pulls-spent count fits ON TOP OF that banner's actual starting
+            # pity (0 unless it's the banner's first event with carryover)
+            # is a separate, narrower question only _normalize_pity_carryover
+            # can answer, and IS the genuine ambiguity worth clarifying.
+            if pity > hard_pity:
                 return f"event_order {event['event_order']}: pity_at_outcome ({pity}) is out of range 0-{hard_pity}"
         # refund_count may be null: the question simply didn't mention
         # refunds for this event. That's distinct from an explicit "no
