@@ -312,7 +312,7 @@ class TestSessionStateIntegration:
         # The spending tiers (see TestSpendingTiers) are their own further
         # simulations layered on top of the pre-run this test is about;
         # neutralized here so len(runs) still isolates just the pre-run.
-        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], []))
+        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], [], []))
 
         answer, runs, breakdown = run_advisor(
             params, stats,
@@ -518,7 +518,7 @@ class TestSessionStateIntegration:
         monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
         # Neutralized so the spending tiers' own further simulations (see
         # TestSpendingTiers) don't shift the indices this test relies on.
-        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], []))
+        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], [], []))
 
         answer, runs, breakdown = run_advisor(
             params, stats,
@@ -835,7 +835,7 @@ class TestSpendingTiers:
         run_params = {**BASELINE_PARAMS, "total_pulls": 50, "strategy": [{"banner": "weapon", "copies": 1}]}
         primary_result = {"success_rate": "31.25%"}
 
-        tiers, runs = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+        tiers, runs, comparisons = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
 
         assert [t["key"] for t in tiers] == ["f2p", "moderate", "whale"]
         assert tiers[0]["total_pulls"] == 50 and tiers[0]["extra_pulls"] == 0
@@ -843,6 +843,13 @@ class TestSpendingTiers:
         assert tiers[1]["total_pulls"] == 136 and tiers[1]["extra_pulls"] == 86
         assert tiers[2]["total_pulls"] == 160 and tiers[2]["extra_pulls"] == 110
         assert len(runs) == 2   # moderate confirmation + guaranteed confirmation
+
+        # All three pairwise gaps, each as a percent of the 50-pull current budget.
+        assert len(comparisons) == 3
+        f2p_to_mod, f2p_to_whale, mod_to_whale = comparisons
+        assert f2p_to_mod["delta_pulls"] == 86 and f2p_to_mod["pct_of_current_budget"] == 172.0
+        assert f2p_to_whale["delta_pulls"] == 110 and f2p_to_whale["pct_of_current_budget"] == 220.0
+        assert mod_to_whale["delta_pulls"] == 24 and mod_to_whale["pct_of_current_budget"] == 48.0
 
     def test_spending_tiers_skips_moderate_and_whale_when_f2p_already_guarantees(self, monkeypatch):
         monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
@@ -853,10 +860,11 @@ class TestSpendingTiers:
         run_params = {**BASELINE_PARAMS, "total_pulls": 200, "strategy": [{"banner": "weapon", "copies": 1}]}
         primary_result = {"success_rate": "99.99%"}
 
-        tiers, runs = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+        tiers, runs, comparisons = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
 
         assert [t["key"] for t in tiers] == ["f2p"]
         assert runs == []
+        assert comparisons == []   # nothing to compare with only one tier present
 
     def test_run_advisor_surfaces_tier_lines_and_context_to_the_model(self, monkeypatch):
         # End-to-end: the tier lines land in the breakdown for the UI, and
@@ -889,6 +897,50 @@ class TestSpendingTiers:
         assert "F2P" in final_call_context
         assert "Spend if you really want it" in final_call_context
         assert "Guaranteed, for a big spender" in final_call_context
+        # The pairwise pull-count gaps, as a percent of the current budget,
+        # are handed over too, not left for the model to compute itself.
+        assert "pull-count gaps between the tiers" in final_call_context
+        assert "% on top of your current 40-pull budget" in final_call_context
+
+    def test_context_names_numbers_from_the_question_to_prevent_recomputation(self, monkeypatch):
+        # Live-testing found the model sometimes re-subtracting a number
+        # from the question itself (e.g. "lost after 10 pulls") from the
+        # already-final F2P total, producing a wrong, lower figure. The
+        # fix is naming that exact number in the context so it can't be
+        # mistaken for something still needing to be applied.
+        params = {**BASELINE_PARAMS, "total_pulls": 50,
+                  "strategy": [{"banner": "weapon", "copies": 1}]}
+        stats = {**BASELINE_STATS, "initial_pulls": 50, "desired_characters": 0, "desired_weapons": 1}
+        events = [_event(1, "weapon", "loss", 10, 0)]
+
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="ok")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+
+        run_advisor(params, stats, "I lost the weapon after 10 pulls, how am I doing with what's left?")
+
+        final_call_context = fake.calls[-1]["messages"][1]["content"]
+        assert "Numbers mentioned in your own question (10)" in final_call_context
+        assert "already fully incorporated into the 40 figure above" in final_call_context
+
+    def test_tier_pull_comparisons_covers_every_pair_present(self):
+        tiers = [
+            {"key": "f2p", "label": "F2P", "total_pulls": 50},
+            {"key": "moderate", "label": "Moderate", "total_pulls": 136},
+            {"key": "whale", "label": "Whale", "total_pulls": 160},
+        ]
+        comparisons = advisor._tier_pull_comparisons(tiers, current_budget=50)
+        assert [(c["from_label"], c["to_label"]) for c in comparisons] == [
+            ("F2P", "Moderate"), ("F2P", "Whale"), ("Moderate", "Whale"),
+        ]
+        assert [c["delta_pulls"] for c in comparisons] == [86, 110, 24]
+        assert [c["pct_of_current_budget"] for c in comparisons] == [172.0, 220.0, 48.0]
+
+    def test_tier_pull_comparisons_empty_when_only_f2p_is_present(self):
+        assert advisor._tier_pull_comparisons([{"key": "f2p", "label": "F2P", "total_pulls": 50}], 50) == []
 
 
 class TestPityConflictClarification:
