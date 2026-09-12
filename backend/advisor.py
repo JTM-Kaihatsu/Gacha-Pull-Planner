@@ -36,6 +36,11 @@ MAX_SCENARIOS = 4
 # without paying for a full guarantee. Below this, the F2P figure already
 # covers it and there's nothing to upsell; above it just starts eating into
 # the guaranteed tier's territory for diminishing return.
+# Above this, the current budget is already as good as it gets in
+# practice; showing a further "guaranteed" pull count on top of an
+# already-near-certain result would just restate the same ~100% back at a
+# higher cost, not add anything worth knowing.
+NEAR_CERTAIN_SUCCESS_RATE = 0.995
 MODERATE_SPEND_TARGET = 0.85
 # A reduced trial count for the tier search's own probing calls: it only
 # needs to find roughly the right pull count, not publication precision,
@@ -400,28 +405,39 @@ def _extra_pulls_for_target_rate(run_params, target_rate, extra_cap):
 
 
 def _spending_tiers(scenario, run_params, baseline_params, primary_result):
-    """Pre-compute the two further spending tiers beyond the F2P result
-    already simulated: the smallest top-up that reaches a comfortably-safe
-    success rate, and the pull count that mathematically guarantees the
-    remaining goal outright. Everything here is either a real simulation
-    result or closed-form hard-pity arithmetic, never a model guess, so the
-    interpretation model can only narrate figures that are actually true.
+    """Pre-compute up to two further pull-count options beyond the current
+    budget already simulated: a modest top-up that reaches a comfortably-
+    safe success rate, and the pull count that mathematically guarantees
+    the remaining goal outright. Everything here is either a real
+    simulation result or closed-form hard-pity arithmetic, never a model
+    guess, so the interpretation model can only narrate figures that are
+    actually true. These are internal reasoning material, not "tiers" to
+    be labeled or listed in the answer; see SYSTEM_PROMPT for how they're
+    meant to be woven in.
 
     Returns (tiers, runs, comparisons). tiers is a list of
     {"key", "label", "total_pulls", "success_rate", "extra_pulls"} dicts
-    (F2P always included; the other two omitted when they'd just repeat a
-    figure already shown, e.g. F2P already clears the guarantee). runs is
-    every further simulation actually executed, for the UI receipts.
-    comparisons is every pairwise pull-count gap between the tiers that
-    ARE present (see _tier_pull_comparisons), for the model to reason
-    about relative effort with, never left to compute itself."""
-    runs = []
+    (the current budget always included first; the other two omitted
+    whenever they wouldn't add anything: nothing further is computed at
+    all once the current budget is already effectively a sure thing, and
+    the top-up option is skipped on its own whenever the current budget
+    already clears it). runs is every further simulation actually
+    executed, for the UI receipts. comparisons is every pairwise pull-
+    count gap between the options that ARE present (see
+    _tier_pull_comparisons), for the model to reason about relative
+    effort with, never left to compute itself."""
     tiers = [{
-        "key": "f2p", "label": "F2P (current budget)",
+        "key": "f2p", "label": "your current budget",
         "total_pulls": run_params["total_pulls"], "success_rate": primary_result["success_rate"],
         "extra_pulls": 0,
     }]
 
+    if _success_pct(primary_result) >= NEAR_CERTAIN_SUCCESS_RATE * 100:
+        # Already as good as it gets: a "guaranteed" pull count would only
+        # ever restate the same ~100% back at a higher cost.
+        return tiers, [], []
+
+    runs = []
     guaranteed_pulls = _guaranteed_scenario_pulls(scenario, baseline_params)
     guaranteed_extra = max(guaranteed_pulls - run_params["total_pulls"], 0)
 
@@ -432,7 +448,7 @@ def _spending_tiers(scenario, run_params, baseline_params, primary_result):
         ))
         runs.append(moderate_result)
         tiers.append({
-            "key": "moderate", "label": "Spend If You Really Want It",
+            "key": "moderate", "label": "a modest top-up",
             "total_pulls": run_params["total_pulls"] + moderate_extra,
             "success_rate": moderate_result["success_rate"], "extra_pulls": moderate_extra,
         })
@@ -443,13 +459,13 @@ def _spending_tiers(scenario, run_params, baseline_params, primary_result):
         ))
         runs.append(guaranteed_result)
         tiers.append({
-            "key": "whale", "label": "Guaranteed (Big Spender)",
+            "key": "whale", "label": "the guaranteed pull count",
             "total_pulls": guaranteed_pulls,
             "success_rate": guaranteed_result["success_rate"], "extra_pulls": guaranteed_extra,
         })
-    # guaranteed_extra <= 0 means the current F2P budget already meets or
+    # guaranteed_extra <= 0 means the current budget already meets or
     # exceeds the pull count that guarantees the goal outright: nothing
-    # further to show, the F2P tier above already IS the guaranteed one.
+    # further to show, the current-budget figure above already IS that.
 
     comparisons = _tier_pull_comparisons(tiers, run_params["total_pulls"])
     return tiers, runs, comparisons
@@ -620,19 +636,36 @@ SYSTEM_PROMPT = (
     "tool to actually test any what-if instead of guessing, then compare the result "
     "to the baseline and answer in short, direct sentences, never just a number followed "
     "by an offer to explore more, that tells the reader nothing they didn't already know. "
-    "When given F2P / spend-if-you-really-want-it / guaranteed spending tiers, address each "
-    "one given to you by name in a sentence or so and say plainly which one you'd actually "
-    "recommend for someone in this spot and why, don't just list three numbers and stop. When "
-    "also given the pull-count gaps between tiers (as a percent of the current budget), use them "
-    "to comment on relative effort, a small percentage step is a minor top-up worth considering "
-    "lightly, a step that doubles or more than doubles the budget is a real commitment and should "
-    "be described as one, don't present every step as equally easy just because a number exists "
-    "for it. Otherwise (a plain what-if with no tiers given) 2 to 4 short sentences is still right. "
+    "You may be given further pull-count figures beyond the current budget (a modest top-up and/or "
+    "a pull count that guarantees the goal). Never label these as tiers, levels, or address them "
+    "one by one by name (do not say 'F2P', 'spend if you really want it', 'guaranteed', 'big "
+    "spender', or similar labels); weave them in only where they genuinely add something, speaking "
+    "to different situations implicitly instead, for example 'if you're free-to-play or price "
+    "sensitive, ...', 'if this character or weapon (or an extra copy of it, for its added "
+    "strength) really matters to you, ...', 'to guarantee you hit your goal no matter what, ...'. "
+    "The simplest framing is often best and does not need three separate clauses: state the current "
+    "odds in plain qualitative terms based on the actual percentage (roughly: under 20 percent is "
+    "pretty low, 20 to 45 is a stretch, 45 to 60 is close to a coin toss, 60 to 85 is pretty good, "
+    "above 85 is comfortable, at or near 100 is already about as safe as it gets) and give a plain "
+    "recommendation; only mention a further pull count when it adds something useful, for example a "
+    "small top-up meaningfully changing the picture is worth flagging, while a much larger step for "
+    "little extra gain is worth saying isn't worth it. If nothing further was given at all (the "
+    "current odds are already about as good as they can get), just say so plainly and stop, do not "
+    "invent a further option to discuss. When given the pull-count gap between two such figures (as "
+    "a percent of the current budget), use it to judge how big an ask that step actually is, a small "
+    "percentage is a minor step, one over 100 percent roughly doubles or more than doubles the "
+    "budget and is a real commitment, describe it as one rather than presenting every step as "
+    "equally easy just because a number exists for it. More pulls do not always mean spending money, "
+    "gacha games often let players earn more through events, achievements, or side quests too, so "
+    "prefer neutral phrasing like 'getting' or 'having' more pulls over 'spending' or 'buying' them, "
+    "unless the question itself is specifically about paying. Otherwise (a plain what-if with "
+    "nothing further given) 2 to 4 short sentences is still right. "
     "Always cite the specific success rates you got from the tool (for example, at 220 pulls "
-    "it is 71 percent) so your answer is grounded in the numbers. Be honest: if a tier barely "
-    "helps or the odds are poor even fully spent, say so, and do not push the user to spend "
-    "more than they need to; if F2P is already comfortable, say that plainly and don't manufacture "
-    "urgency to spend anyway. Respect the stated goal and starting conditions: do not assume the user "
+    "it is 71 percent) so your answer is grounded in the numbers. Be honest: if a further pull "
+    "count barely helps or the odds are poor even at the highest figure given, say so, and do not "
+    "push the user to get more pulls than they need to; if the current odds are already comfortable, "
+    "say that plainly and don't manufacture urgency to get more anyway. Respect the stated goal and "
+    "starting conditions: do not assume the user "
     "wants a character or weapon copy they did not include. If the goal is already a "
     "single copy, there is nothing to trim, so focus on more pulls or waiting. Pity "
     "for a banner resets to 0 the instant a 5-star of that banner's type is obtained, "
@@ -1054,16 +1087,24 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         runs.append(primary_result)
         lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
 
-        # Three spending tiers, pre-computed here rather than left to the
-        # model: F2P (the primary result above, current budget as-is), a
-        # comfortably-safe top-up (MODERATE_SPEND_TARGET), and the pull
-        # count that mathematically guarantees the remaining goal via hard
-        # pity. Every figure the model gets to cite already came from a
-        # real run or closed-form arithmetic, never a guess.
+        # Up to two further pull-count figures, pre-computed here rather
+        # than left to the model: a comfortably-safe top-up
+        # (MODERATE_SPEND_TARGET) and the pull count that mathematically
+        # guarantees the remaining goal via hard pity, alongside the
+        # current-budget result above. Every figure the model gets to
+        # cite already came from a real run or closed-form arithmetic,
+        # never a guess, and it's told to weave these in implicitly
+        # rather than list them as labeled tiers (see SYSTEM_PROMPT).
         tiers, tier_runs, tier_comparisons = _spending_tiers(scenario, run_params, baseline_params, primary_result)
         runs.extend(tier_runs)
-        for tier in tiers[1:]:
-            lines = lines + [build_spending_tier_line(tier["label"], tier["total_pulls"], tier["success_rate"])]
+        # Generic, unbranded pill labels: what these figures ARE (a
+        # further AI-run simulation) matters for the UI receipts, not
+        # what marketing tier they'd map to, that framing belongs only in
+        # the prose below, softened, and only when it adds something.
+        further_tiers = tiers[1:]
+        for i, tier in enumerate(further_tiers, start=1):
+            label = "AI Agent Simulated Result" if len(further_tiers) == 1 else f"AI Agent Simulated Result {i}"
+            lines = lines + [build_spending_tier_line(label, tier["total_pulls"], tier["success_rate"])]
 
         breakdown = {"status": "ok", "lines": lines}
         if reconciled.get("annotations"):
@@ -1071,10 +1112,10 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         remaining = remaining_goal_text(scenario["remaining_characters"], scenario["remaining_weapons"])
 
         tier_facts = [
-            f"F2P (spending nothing further, your current budget as reported): "
-            f"{run_params['total_pulls']} pulls, success rate {primary_result['success_rate']}, "
-            f"average leftover pulls on success {primary_result['avg_leftover_pulls_on_success']}, "
-            f"most common failure state {primary_result['most_common_failure_state']}."
+            f"Your current budget, spending nothing further: {run_params['total_pulls']} pulls, "
+            f"success rate {primary_result['success_rate']}, average leftover pulls on success "
+            f"{primary_result['avg_leftover_pulls_on_success']}, most common failure state "
+            f"{primary_result['most_common_failure_state']}."
         ]
         # Live-testing found the model sometimes re-subtracting a number
         # from the question itself (e.g. "lost after 10 pulls") from the
@@ -1094,33 +1135,35 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         whale = next((t for t in tiers if t["key"] == "whale"), None)
         if moderate:
             tier_facts.append(
-                f"Spend if you really want it (worth it if this character or weapon matters to you or "
-                f"your build, not required): {moderate['total_pulls']} total pulls (an extra "
-                f"{moderate['extra_pulls']} beyond your current budget), success rate "
-                f"{moderate['success_rate']}, comfortably likely without paying for a full guarantee."
+                f"A modest additional pull count, worth mentioning only if this character or weapon "
+                f"(or an extra copy of it, for its added strength) genuinely matters to the player: "
+                f"{moderate['total_pulls']} total pulls (an extra {moderate['extra_pulls']} beyond the "
+                f"current budget), success rate {moderate['success_rate']}, comfortably likely without "
+                f"needing a full guarantee."
             )
         if whale:
             tier_facts.append(
-                f"Guaranteed, for a big spender or content creator who wants zero risk: "
-                f"{whale['total_pulls']} total pulls (an extra {whale['extra_pulls']} beyond your "
-                f"current budget), success rate {whale['success_rate']}. This is not a probability, "
-                f"hard pity mathematically forces this outcome regardless of luck at that many pulls."
+                f"The pull count that guarantees the entire remaining goal outright, worth mentioning "
+                f"only if the player wants zero risk: {whale['total_pulls']} total pulls (an extra "
+                f"{whale['extra_pulls']} beyond the current budget), success rate {whale['success_rate']}. "
+                f"This is not a probability, hard pity mathematically forces this outcome regardless of "
+                f"luck at that many pulls."
             )
         if not moderate and not whale:
             tier_facts.append(
-                "Your current budget already meets or exceeds the pull count that guarantees this "
-                "goal outright via hard pity, regardless of luck: there is nothing further worth "
-                "spending on, this is as safe as it gets."
+                "The current budget is already as good as it gets, at or near a full guarantee via hard "
+                "pity, regardless of luck: there is nothing further worth pursuing, this is already as "
+                "safe as it can be."
             )
 
         if tier_comparisons:
             comparison_facts = [
                 f"{c['from_label']} to {c['to_label']}: {c['delta_pulls']} more pulls "
-                f"({c['pct_of_current_budget']}% on top of your current {run_params['total_pulls']}-pull budget)."
+                f"({c['pct_of_current_budget']}% on top of the current {run_params['total_pulls']}-pull budget)."
                 for c in tier_comparisons
             ]
             tier_facts.append(
-                "Exact pull-count gaps between the tiers above, each also given as a percent of your "
+                "Exact pull-count gaps between the figures above, each also given as a percent of the "
                 "current budget so you have one consistent yardstick for how big a step each one "
                 "actually is: " + " ".join(comparison_facts) + " Use these to comment on relative "
                 "effort, for example a gap under roughly 25 percent of the current budget is a small "
@@ -1137,11 +1180,9 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             f"success and failure only in terms of what remains, anything not listed there is "
             f"already obtained and must not be described as still needed, at risk, or a "
             f"possible failure. "
-            f"The following spending tiers have ALREADY been run or computed for you, address "
-            f"the ones given below by name (F2P, spend if you really want it, guaranteed), each "
-            f"in a sentence or so, using only these exact figures; never invent a tier, a pull "
-            f"count, or a success rate that isn't listed here. Skip a tier only if it is genuinely "
-            f"identical to one you already covered. " + " ".join(tier_facts) + " "
+            f"The following pull-count figures have ALREADY been run or computed for you; use only "
+            f"these exact numbers, never invent a further pull count or success rate that isn't "
+            f"listed here. " + " ".join(tier_facts) + " "
             f"Never state a total_pulls figure or a success rate in your answer that you did not "
             f"get from the figures above or an actual run_simulation call; if you want to explore "
             f"a further, different scenario the question specifically asks about, call the tool "

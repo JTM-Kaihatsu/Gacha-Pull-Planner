@@ -851,6 +851,39 @@ class TestSpendingTiers:
         assert f2p_to_whale["delta_pulls"] == 110 and f2p_to_whale["pct_of_current_budget"] == 220.0
         assert mod_to_whale["delta_pulls"] == 24 and mod_to_whale["pct_of_current_budget"] == 48.0
 
+    def test_single_further_pill_label_has_no_number_suffix(self, monkeypatch):
+        # Current odds already comfortable (93.75%, above the 85% moderate
+        # target but short of near-certain), so only the guaranteed figure
+        # is computed; its pill label should read plainly, not "... 1".
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+        scenario = {
+            "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 0,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False, "remaining_weapons": 1,
+        }
+        run_params = {**BASELINE_PARAMS, "total_pulls": 150, "strategy": [{"banner": "weapon", "copies": 1}]}
+        primary_result = {"success_rate": "93.75%"}
+        tiers, _runs, _comparisons = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+        assert [t["key"] for t in tiers] == ["f2p", "whale"]
+
+        # Same scenario end-to-end through run_advisor: starting budget 160,
+        # 2 weapon copies desired, 1 already WON after 10 pulls (a win, not
+        # a loss, so guarantee resets to False for the still-remaining
+        # copy, matching the "not guaranteed" 160-pull figure above).
+        params = {**BASELINE_PARAMS, "total_pulls": 160, "strategy": [{"banner": "weapon", "copies": 2}]}
+        stats = {**BASELINE_STATS, "initial_pulls": 160, "desired_characters": 0, "desired_weapons": 2}
+        events = [_event(1, "weapon", "win", 10, 0)]
+        fake = _FakeClient([
+            _extraction_response(events=events),
+            _response(_msg(content="ok")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+        answer, runs, breakdown = run_advisor(params, stats, "I won the weapon after 10 pulls, how am I doing?")
+
+        labels = [line["label"] for line in breakdown["lines"]]
+        assert "AI Agent Simulated Result" in labels
+        assert not any(label.startswith("AI Agent Simulated Result ") for label in labels)
+
     def test_spending_tiers_skips_moderate_and_whale_when_f2p_already_guarantees(self, monkeypatch):
         monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
         scenario = {
@@ -866,10 +899,36 @@ class TestSpendingTiers:
         assert runs == []
         assert comparisons == []   # nothing to compare with only one tier present
 
+    def test_spending_tiers_skips_everything_once_the_current_budget_is_already_near_certain(self, monkeypatch):
+        # Live bug report: the theoretical worst-case "guaranteed" pull
+        # count (via hard pity) can be well above what the current budget
+        # actually needs in practice, since real average-case luck beats
+        # the pessimistic worst case. If the current budget's OWN
+        # simulated success rate is already near-certain, nothing further
+        # should even be computed, regardless of how the closed-form
+        # guarantee bound compares to the current budget.
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
+        scenario = {
+            "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 0,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False, "remaining_weapons": 1,
+        }
+        # guaranteed_pulls would be 160 (see _guaranteed_pulls_for_banner),
+        # comfortably above this 100-pull budget, so the OLD guaranteed_extra
+        # check alone would not have skipped anything here.
+        run_params = {**BASELINE_PARAMS, "total_pulls": 100, "strategy": [{"banner": "weapon", "copies": 1}]}
+        primary_result = {"success_rate": "99.80%"}
+
+        tiers, runs, comparisons = advisor._spending_tiers(scenario, run_params, BASELINE_PARAMS, primary_result)
+
+        assert [t["key"] for t in tiers] == ["f2p"]
+        assert runs == []
+        assert comparisons == []
+
     def test_run_advisor_surfaces_tier_lines_and_context_to_the_model(self, monkeypatch):
-        # End-to-end: the tier lines land in the breakdown for the UI, and
-        # the model's final call is told about them by name so it can't
-        # just regurgitate the F2P number and punt.
+        # End-to-end: the further pull-count lines land in the breakdown
+        # for the UI under generic, unbranded labels, and the model's
+        # final call is told the underlying figures so it can't just
+        # regurgitate the current-budget number and punt.
         params = {**BASELINE_PARAMS, "total_pulls": 50,
                   "strategy": [{"banner": "weapon", "copies": 1}]}
         stats = {**BASELINE_STATS, "initial_pulls": 50, "desired_characters": 0, "desired_weapons": 1}
@@ -877,7 +936,7 @@ class TestSpendingTiers:
 
         fake = _FakeClient([
             _extraction_response(events=events),
-            _response(_msg(content="Answer covering all three tiers.")),
+            _response(_msg(content="Answer covering the current odds and further options.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
@@ -886,21 +945,25 @@ class TestSpendingTiers:
             params, stats, "I lost the weapon after 10 pulls, how am I doing?",
         )
 
-        assert answer == "Answer covering all three tiers."
+        assert answer == "Answer covering the current odds and further options."
         labels = [line["label"] for line in breakdown["lines"]]
-        assert "Spend If You Really Want It" in labels
-        assert "Guaranteed (Big Spender)" in labels
-        # The F2P pre-run plus the two tier confirmations, all tracked receipts.
+        # Generic, numbered pill labels, no "tier" branding in the UI.
+        assert "AI Agent Simulated Result 1" in labels
+        assert "AI Agent Simulated Result 2" in labels
+        # The current-budget pre-run plus the two further confirmations,
+        # all tracked receipts.
         assert len(runs) == 3
 
         final_call_context = fake.calls[-1]["messages"][1]["content"]
-        assert "F2P" in final_call_context
-        assert "Spend if you really want it" in final_call_context
-        assert "Guaranteed, for a big spender" in final_call_context
+        assert "Your current budget, spending nothing further" in final_call_context
+        assert "A modest additional pull count" in final_call_context
+        assert "The pull count that guarantees the entire remaining goal outright" in final_call_context
+        # The model is told NOT to label these as tiers in its own answer.
+        assert "Never label these as tiers" in advisor.SYSTEM_PROMPT
         # The pairwise pull-count gaps, as a percent of the current budget,
         # are handed over too, not left for the model to compute itself.
-        assert "pull-count gaps between the tiers" in final_call_context
-        assert "% on top of your current 40-pull budget" in final_call_context
+        assert "pull-count gaps between the figures" in final_call_context
+        assert "% on top of the current 40-pull budget" in final_call_context
 
     def test_context_names_numbers_from_the_question_to_prevent_recomputation(self, monkeypatch):
         # Live-testing found the model sometimes re-subtracting a number
