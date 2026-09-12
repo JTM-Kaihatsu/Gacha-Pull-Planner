@@ -338,6 +338,34 @@ def test_won_character_then_lost_weapon_leaves_only_weapon_remaining():
     assert {"banner": "weapon", "copies": 1} in result["strategy"]
 
 
+def test_interleaved_pull_order_does_not_duplicate_remaining_copies():
+    # Live bug report: a pull order like "1 character, then the weapon,
+    # then the remaining 2 characters" lists the "char" banner in TWO
+    # separate baseline strategy phases. After 2 of 3 character copies are
+    # won, remaining_characters correctly reads 1, but the strategy used
+    # to actually run the follow-up simulation was assigning the FULL
+    # remaining count to EVERY matching phase, silently doubling it to 2
+    # characters simulated instead of 1, and gutting the reported success
+    # rate to well under half of the true figure.
+    params = {**BASELINE_PARAMS, "total_pulls": 300, "start_char_pity": 15, "start_weapon_pity": 8,
+              "strategy": [{"banner": "char", "copies": 1}, {"banner": "weapon", "copies": 1},
+                           {"banner": "char", "copies": 2}]}
+    stats = {**BASELINE_STATS, "desired_characters": 3, "initial_pulls": 300,
+             "start_char_pity": 15, "start_weapon_pity": 8}
+    events = [
+        _event(1, "character", "win", 42, None, pity_is_absolute=True),
+        _event(2, "character", "win", 60, None, pity_is_absolute=False),
+        _event(3, "weapon", "loss", 15, None, pity_is_absolute=True),
+    ]
+    result = reconcile(_blank(events=events), params, stats)
+    assert result["ok"] is True
+    assert result["remaining_characters"] == 1
+    assert result["remaining_weapons"] == 1
+    # Exactly one phase per remaining banner, each with the true remaining
+    # count, not one entry per original phase that banner appeared in.
+    assert result["strategy"] == [{"banner": "char", "copies": 1}, {"banner": "weapon", "copies": 1}]
+
+
 def test_remaining_goal_text():
     assert remaining_goal_text(0, 0) == "nothing, everything above is already obtained"
     assert remaining_goal_text(1, 0) == "1 character"

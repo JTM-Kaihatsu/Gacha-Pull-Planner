@@ -661,18 +661,29 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     lines.append(goal_line)
 
-    # Preserve the baseline's relative pull order for whichever banners remain.
-    strategy = [
-        {"banner": phase["banner"],
-         "copies": chars_remaining if phase["banner"] == "char" else weapons_remaining}
-        for phase in baseline_params["strategy"]
-        if (phase["banner"] == "char" and chars_remaining >= 1)
-        or (phase["banner"] == "weapon" and weapons_remaining >= 1)
-    ]
-    present_banners = {p["banner"] for p in strategy}
-    if chars_remaining >= 1 and "char" not in present_banners:
+    # Preserve the baseline's relative pull order for whichever banners
+    # remain. The baseline strategy can list the SAME banner in more than
+    # one phase (e.g. "pull 1 character, then the weapon, then the
+    # remaining 2 characters"), so a banner's full remaining count must
+    # land on only the FIRST phase it still appears in; every later phase
+    # for that same banner is dropped rather than getting the full
+    # remaining count all over again, which would silently double (or
+    # more) the actual number of copies simulated beyond what's shown as
+    # the remaining goal.
+    strategy = []
+    seen_banners = set()
+    for phase in baseline_params["strategy"]:
+        banner = phase["banner"]
+        if banner in seen_banners:
+            continue
+        remaining = chars_remaining if banner == "char" else weapons_remaining
+        if remaining < 1:
+            continue
+        strategy.append({"banner": banner, "copies": remaining})
+        seen_banners.add(banner)
+    if chars_remaining >= 1 and "char" not in seen_banners:
         strategy.append({"banner": "char", "copies": chars_remaining})
-    if weapons_remaining >= 1 and "weapon" not in present_banners:
+    if weapons_remaining >= 1 and "weapon" not in seen_banners:
         strategy.append({"banner": "weapon", "copies": weapons_remaining})
 
     return {
