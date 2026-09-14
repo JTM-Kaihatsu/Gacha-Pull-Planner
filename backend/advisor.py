@@ -1085,7 +1085,11 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         # exists before the model's first turn can't be gotten wrong.
         primary_result = _condense(run_simulation_verbose(**run_params, trials=ADVISOR_TRIALS))
         runs.append(primary_result)
-        lines = lines + [build_result_line(run_params["total_pulls"], primary_result["success_rate"])]
+        # Numbered from 1 like every other figure here, the current-budget
+        # result is just as much an AI-orchestrated run as the ones after
+        # it, not a separate, un-orchestrated "given" the others build on.
+        lines = lines + [build_spending_tier_line("AI Agent Simulated Result 1",
+                                                    run_params["total_pulls"], primary_result["success_rate"])]
 
         # Up to two further pull-count figures, pre-computed here rather
         # than left to the model: a comfortably-safe top-up
@@ -1097,13 +1101,14 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         # rather than list them as labeled tiers (see SYSTEM_PROMPT).
         tiers, tier_runs, tier_comparisons = _spending_tiers(scenario, run_params, baseline_params, primary_result)
         runs.extend(tier_runs)
-        # Generic, unbranded pill labels: what these figures ARE (a
-        # further AI-run simulation) matters for the UI receipts, not
-        # what marketing tier they'd map to, that framing belongs only in
-        # the prose below, softened, and only when it adds something.
-        further_tiers = tiers[1:]
-        for i, tier in enumerate(further_tiers, start=1):
-            label = "AI Agent Simulated Result" if len(further_tiers) == 1 else f"AI Agent Simulated Result {i}"
+        # Generic, unbranded pill labels, numbered on from the current-
+        # budget result above (so a single further figure reads "2", not
+        # "1" again): what these figures ARE (a further AI-run simulation)
+        # matters for the UI receipts, not what marketing tier they'd map
+        # to, that framing belongs only in the prose below, softened, and
+        # only when it adds something.
+        for i, tier in enumerate(tiers[1:], start=2):
+            label = f"AI Agent Simulated Result {i}"
             lines = lines + [build_spending_tier_line(label, tier["total_pulls"], tier["success_rate"])]
 
         breakdown = {"status": "ok", "lines": lines}
