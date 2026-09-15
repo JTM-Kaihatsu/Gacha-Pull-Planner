@@ -16,6 +16,8 @@ advisor.py is the only caller, and only re-invokes the extraction model when
 this module reports an inconsistency (capped at one retry).
 """
 
+from simulation import DUPE_WIN_REFUND_BONUS
+
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
@@ -24,11 +26,11 @@ MAX_WEAPON_COPIES = 5     # W1-W5
 # characters at max copies" checked, since that's the only condition under
 # which 4-star pulls reliably convert to refunds at all. Rates are the
 # empirical average refunds per pull spent on that banner under max-copy
-# refunding; the dupe bonus accounts for a 5-star win on a banner where the
-# featured item's first copy is already owned, since a repeat win itself
-# refunds a fixed amount on top of the per-pull rate.
+# refunding; the dupe bonus (imported from simulation.py, the canonical
+# source, so both stay in sync) accounts for a 5-star win on a banner where
+# the featured item's first copy is already owned, since a repeat win
+# itself refunds a fixed amount on top of the per-pull rate.
 _REFUND_RATE = {"character": 0.1105, "weapon": 0.0578}
-DUPE_WIN_REFUND_BONUS = 2
 
 
 def _estimate_refunds(banner, outcome, pity, prior_copies):

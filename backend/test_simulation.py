@@ -171,6 +171,51 @@ class TestSimulateCombo:
         assert copies[0]["pulls_used"] == 1   # first copy's 50/50 was guaranteed
         assert sum(c["pulls_used"] for c in copies) == used
 
+    def test_repeat_character_copy_refunds_the_dupe_bonus(self, always_hit_config):
+        # With every pull hitting a 5-star, pity_4star_char never has a
+        # chance to reach its own trigger, so each copy's refunds figure
+        # is driven purely by the dupe bonus, not 4-star noise: a flat +2
+        # the moment a copy is won with at least one already owned,
+        # regardless of how many pulls that copy itself took.
+        _, _, _, _, meta = simulate_combo_verbose(
+            total_pulls=20,
+            strategy=[{"banner": "char", "copies": 2}],
+            start_char_guarantee=True,
+            full_4star_chars=True,
+            char_pity_config=always_hit_config,
+        )
+        copies = meta["copy_detail"]
+        assert copies[0]["refunds"] == 0   # first copy is not a repeat
+        assert copies[1]["refunds"] == 2   # second copy is, dupe bonus applied
+
+    def test_repeat_character_copy_gets_no_dupe_bonus_without_full_4star_chars(self, always_hit_config):
+        # The dupe bonus is gated the same way as the character 4-star
+        # refund branch: only when "all 4-stars at max copies" is on.
+        _, _, _, _, meta = simulate_combo_verbose(
+            total_pulls=20,
+            strategy=[{"banner": "char", "copies": 2}],
+            start_char_guarantee=True,
+            full_4star_chars=False,
+            char_pity_config=always_hit_config,
+        )
+        assert meta["copy_detail"][1]["refunds"] == 0
+
+    def test_repeat_weapon_copy_refunds_the_dupe_bonus_unconditionally(self, always_hit_config):
+        # Unlike the character side, the weapon dupe bonus isn't gated by
+        # full_4star_chars at all, matching the weapon 4-star refund
+        # branch, which is also unconditional (that flag is specifically
+        # about character fodder).
+        _, _, _, _, meta = simulate_combo_verbose(
+            total_pulls=20,
+            strategy=[{"banner": "weapon", "copies": 2}],
+            start_weapon_guarantee=True,
+            full_4star_chars=False,
+            weapon_pity_config=always_hit_config,
+        )
+        copies = meta["copy_detail"]
+        assert copies[0]["refunds"] == 0
+        assert copies[1]["refunds"] == 2
+
     def test_incomplete_run_pads_remaining_copies_with_zero(self, never_hit_config):
         # 3 character copies wanted but only 5 pulls available and the
         # banner never hits: the whole budget goes into the first copy

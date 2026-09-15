@@ -14,6 +14,13 @@ import pandas as pd
 CHAR_PITY_DEFAULTS = {"base_rate": 0.006, "soft_pity_start": 73, "hard_pity": 90}
 WEAPON_PITY_DEFAULTS   = {"base_rate": 0.008, "soft_pity_start": 65, "hard_pity": 80}
 
+# A repeat 5-star (a copy already owned before this win) refunds a fixed
+# amount on top of any 4-star refunds picked up during that copy's own
+# pulls, the same real mechanic session_state.py's deterministic
+# reconciliation estimates from a reported past event; this is the
+# canonical source of that constant so both stay in sync.
+DUPE_WIN_REFUND_BONUS = 2
+
 
 def banner_probability(pity, base_rate, soft_pity_start, hard_pity):
     if pity < soft_pity_start:
@@ -111,6 +118,14 @@ def simulate_combo_verbose(
                         chars_obtained += 1
                         guarantee_char = False
                         char_50_50_wins += 1
+                        if chars_obtained > 1 and full_4star_chars:
+                            # A repeat character copy: same "all 4-stars at
+                            # max copies" gate as the 4-star refund branch
+                            # below, since that's what makes ANY duplicate
+                            # pull on this banner convert to a refund.
+                            remaining += DUPE_WIN_REFUND_BONUS
+                            refunded_pulls += DUPE_WIN_REFUND_BONUS
+                            copy_refunds += DUPE_WIN_REFUND_BONUS
                         # A copy is won: close out its segment here rather
                         # than at the end of the phase, so a lost 50/50
                         # followed by the eventual guaranteed win still
@@ -149,6 +164,14 @@ def simulate_combo_verbose(
                         weapons_obtained += 1
                         guarantee_weapon = False
                         weapon_75_25_wins += 1
+                        if weapons_obtained > 1:
+                            # A repeat weapon copy: unconditional, same as
+                            # the weapon 4-star refund branch below, which
+                            # isn't gated by full_4star_chars either (that
+                            # flag is specifically about character fodder).
+                            remaining += DUPE_WIN_REFUND_BONUS
+                            refunded_pulls += DUPE_WIN_REFUND_BONUS
+                            copy_refunds += DUPE_WIN_REFUND_BONUS
                         copies_done += 1
                         copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
                         copy_pulls = 0
