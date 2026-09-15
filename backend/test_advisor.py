@@ -326,9 +326,9 @@ class TestSessionStateIntegration:
         # Only 2 model calls total: the extraction, then the answer. The
         # model was never given a chance to pick its own total_pulls.
         assert len(fake.calls) == 2
-        # And the "Simulated Result" line is present, built from the
-        # deterministic pre-run, not asserted by the model.
-        result_line = _find_line(breakdown, "Simulated Result")
+        # And the "AI Agent Simulated Result 1" line is present, built
+        # from the deterministic pre-run, not asserted by the model.
+        result_line = _find_line(breakdown, "AI Agent Simulated Result 1")
         assert result_line["pills"][0]["value"] == "41 pulls → 80.00%"
 
     def test_unstated_refund_is_estimated_end_to_end_when_full_4star_chars(self, monkeypatch):
@@ -493,7 +493,7 @@ class TestSessionStateIntegration:
         # unrequested pity override. This exercises the fix for both: the
         # exploratory call's invented start_weapon_pity is ignored, and the
         # call itself becomes its own tracked "Agent Run Cycle" pill line
-        # appended after the guaranteed "Simulated Result" line.
+        # appended after the guaranteed "AI Agent Simulated Result 1" line.
         params = {**BASELINE_PARAMS, "total_pulls": 100}
         stats = {**BASELINE_STATS, "initial_pulls": 100}
 
@@ -535,9 +535,9 @@ class TestSessionStateIntegration:
         assert exploratory_kwargs["total_pulls"] == 103                # total_pulls itself is still respected
 
         labels = [line["label"] for line in breakdown["lines"]]
-        assert "Simulated Result" in labels
+        assert "AI Agent Simulated Result 1" in labels
         assert "Agent Run Cycle 1" in labels
-        assert labels.index("Agent Run Cycle 1") > labels.index("Simulated Result")
+        assert labels.index("Agent Run Cycle 1") > labels.index("AI Agent Simulated Result 1")
         assert answer == "Even exploring further, the odds stay similar."
 
     def test_every_call_uses_the_low_advisor_temperature(self, monkeypatch):
@@ -851,10 +851,11 @@ class TestSpendingTiers:
         assert f2p_to_whale["delta_pulls"] == 110 and f2p_to_whale["pct_of_current_budget"] == 220.0
         assert mod_to_whale["delta_pulls"] == 24 and mod_to_whale["pct_of_current_budget"] == 48.0
 
-    def test_single_further_pill_label_has_no_number_suffix(self, monkeypatch):
+    def test_single_further_pill_label_continues_the_numbering_from_the_first(self, monkeypatch):
         # Current odds already comfortable (93.75%, above the 85% moderate
         # target but short of near-certain), so only the guaranteed figure
-        # is computed; its pill label should read plainly, not "... 1".
+        # is computed on top of the current-budget result; its pill label
+        # should read "2", continuing the numbering, never restarting at 1.
         monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
         scenario = {
             "start_char_pity": 0, "start_char_guarantee": False, "remaining_characters": 0,
@@ -881,8 +882,9 @@ class TestSpendingTiers:
         answer, runs, breakdown = run_advisor(params, stats, "I won the weapon after 10 pulls, how am I doing?")
 
         labels = [line["label"] for line in breakdown["lines"]]
-        assert "AI Agent Simulated Result" in labels
-        assert not any(label.startswith("AI Agent Simulated Result ") for label in labels)
+        assert "AI Agent Simulated Result 1" in labels
+        assert "AI Agent Simulated Result 2" in labels
+        assert "AI Agent Simulated Result 3" not in labels   # no moderate figure to number
 
     def test_spending_tiers_skips_moderate_and_whale_when_f2p_already_guarantees(self, monkeypatch):
         monkeypatch.setattr(advisor, "run_simulation_verbose", _tier_fake_sim(160))
@@ -947,9 +949,12 @@ class TestSpendingTiers:
 
         assert answer == "Answer covering the current odds and further options."
         labels = [line["label"] for line in breakdown["lines"]]
-        # Generic, numbered pill labels, no "tier" branding in the UI.
+        # Generic, numbered pill labels, no "tier" branding in the UI: the
+        # current-budget result is "1", same numbering as everything after
+        # it, not a separate un-orchestrated given the others compare against.
         assert "AI Agent Simulated Result 1" in labels
         assert "AI Agent Simulated Result 2" in labels
+        assert "AI Agent Simulated Result 3" in labels
         # The current-budget pre-run plus the two further confirmations,
         # all tracked receipts.
         assert len(runs) == 3
