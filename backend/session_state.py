@@ -16,6 +16,8 @@ advisor.py is the only caller, and only re-invokes the extraction model when
 this module reports an inconsistency (capped at one retry).
 """
 
+from simulation import DUPE_WIN_REFUND_BONUS
+
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
@@ -24,18 +26,23 @@ MAX_WEAPON_COPIES = 5     # W1-W5
 # characters at max copies" checked, since that's the only condition under
 # which 4-star pulls reliably convert to refunds at all. Rates are the
 # empirical average refunds per pull spent on that banner under max-copy
-# refunding; the dupe bonus accounts for a 5-star win on a banner where the
-# featured item's first copy is already owned, since a repeat win itself
-# refunds a fixed amount on top of the per-pull rate.
+# refunding; the dupe bonus (imported from simulation.py, the canonical
+# source, so both stay in sync) accounts for a 5-star win on a banner where
+# the featured item's first copy is already owned, since a repeat win
+# itself refunds a fixed amount on top of the per-pull rate.
 _REFUND_RATE = {"character": 0.1105, "weapon": 0.0578}
-DUPE_WIN_REFUND_BONUS = 2
 
 
 def _estimate_refunds(banner, outcome, pity, prior_copies):
-    estimate = _REFUND_RATE[banner] * pity
-    if outcome == "win" and prior_copies >= 1:
-        estimate += DUPE_WIN_REFUND_BONUS
-    return round(estimate)
+    """Returns (base_estimate, dupe_bonus): base_estimate is the per-pull
+    rate estimate (rounded), dupe_bonus is DUPE_WIN_REFUND_BONUS when this
+    win obtains a repeat copy (at least one copy of this banner's featured
+    item already owned before this event: C1+ for a character, W2+ for a
+    weapon), else 0. Kept separate, rather than folded into one number, so
+    the caller can render the dupe bonus as its own distinct pill."""
+    base_estimate = round(_REFUND_RATE[banner] * pity)
+    dupe_bonus = DUPE_WIN_REFUND_BONUS if outcome == "win" and prior_copies >= 1 else 0
+    return base_estimate, dupe_bonus
 
 TOOLTIPS = {
     "start_pulls": "Starting number of pulls for run",
@@ -296,12 +303,17 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
             continue
 
         estimated_refund = refunds is None
+        dupe_bonus = 0
         if estimated_refund:
             # The question never mentioned refunds for this event. Only
             # estimate when max-copy refunding was actually in effect for
             # the baseline; otherwise there's no reliable basis for a
             # nonzero figure, so it stays 0 exactly as before.
-            refunds = _estimate_refunds(banner, outcome, pity, prior_copies) if full_4star_chars else 0
+            if full_4star_chars:
+                base_refund, dupe_bonus = _estimate_refunds(banner, outcome, pity, prior_copies)
+            else:
+                base_refund = 0
+            refunds = base_refund + dupe_bonus
 
         start_pulls = running_pulls
         running_pulls -= pity
@@ -315,7 +327,7 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
 
         refund_pill = (
             {
-                "kind": "number", "value": refunds, "color": "light_green",
+                "kind": "number", "value": base_refund, "color": "light_green",
                 "tooltip": (
                     "A number of refunds wasn't given and all 4-stars are obtained, so a "
                     f"formula estimating the average number of refunds for {pity} pulls has been used"
@@ -323,6 +335,21 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
             }
             if estimated_refund and full_4star_chars else
             _pill("number", refunds, "cyan", "refund")
+        )
+        # A repeat copy (C1+ for a character, W2+ for a weapon) refunds a
+        # fixed amount on top of the per-pull rate; shown as its own "+ 2"
+        # pair rather than silently folded into the estimate above, so it
+        # reads as a distinct, explainable figure instead of an
+        # unexplained jump in the base rate's own number.
+        dupe_pills = (
+            [
+                _pill("operator", "+", "magenta", "add_op"),
+                {
+                    "kind": "number", "value": dupe_bonus, "color": "light_green",
+                    "tooltip": f"A number of refunds wasn't given, and this is an additional {banner} copy",
+                },
+            ]
+            if dupe_bonus > 0 else []
         )
 
         carryover = event.get("pity_carryover")
@@ -354,6 +381,7 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
                 pity_pill,
                 _pill("operator", "+", "magenta", "add_op"),
                 refund_pill,
+                *dupe_pills,
                 _pill("operator", "=", "magenta", "equals_op"),
                 _pill("result", running_pulls, "light_green", "run_result"),
                 _pill("outcome", outcome.upper(), "green" if outcome == "win" else "red", "outcome"),

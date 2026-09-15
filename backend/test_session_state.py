@@ -464,27 +464,27 @@ class TestUnstatedPity:
 
 class TestEstimateRefunds:
     def test_character_formula(self):
-        # 0.1105 * 30 = 3.315 -> rounds to 3
-        assert _estimate_refunds("character", "loss", 30, prior_copies=0) == 3
+        # 0.1105 * 30 = 3.315 -> rounds to 3, no dupe bonus (a loss).
+        assert _estimate_refunds("character", "loss", 30, prior_copies=0) == (3, 0)
 
     def test_weapon_formula(self):
-        # 0.0578 * 50 = 2.89 -> rounds to 3
-        assert _estimate_refunds("weapon", "loss", 50, prior_copies=0) == 3
+        # 0.0578 * 50 = 2.89 -> rounds to 3, no dupe bonus (a loss).
+        assert _estimate_refunds("weapon", "loss", 50, prior_copies=0) == (3, 0)
 
     def test_dupe_win_adds_bonus(self):
         # A win when a copy of that banner's featured item is already owned
-        # adds the +2 dupe bonus on top of the per-pull formula.
-        # 0.1105 * 30 = 3.315 -> 3, plus the +2 bonus = 5
-        assert _estimate_refunds("character", "win", 30, prior_copies=1) == 5
+        # returns the +2 dupe bonus separately from the per-pull formula.
+        # 0.1105 * 30 = 3.315 -> 3, dupe bonus 2, kept apart, not summed.
+        assert _estimate_refunds("character", "win", 30, prior_copies=1) == (3, 2)
 
     def test_dupe_bonus_only_applies_to_wins(self):
         # A loss never obtains a 5-star, so no dupe applies regardless of
         # how many copies were already owned.
-        assert _estimate_refunds("character", "loss", 30, prior_copies=1) == 3
+        assert _estimate_refunds("character", "loss", 30, prior_copies=1) == (3, 0)
 
     def test_first_copy_win_gets_no_dupe_bonus(self):
         # prior_copies == 0: this win is for the first copy, not a repeat.
-        assert _estimate_refunds("character", "win", 30, prior_copies=0) == 3
+        assert _estimate_refunds("character", "win", 30, prior_copies=0) == (3, 0)
 
 
 class TestPityCarryover:
@@ -777,7 +777,9 @@ class TestRefundEstimationInReconcile:
     def test_second_copy_win_with_unstated_refund_gets_dupe_bonus(self):
         # First copy stated explicitly (0 refunds), second copy's refund
         # unstated: the estimate for the second event must include the +2
-        # dupe bonus since a copy of this banner was already obtained.
+        # dupe bonus since a copy of this banner was already obtained, and
+        # the bonus renders as its own "+ 2" pair, not folded into the
+        # base rate's own number.
         events = [
             _event(1, "character", "win", 20, 0),
             _event(2, "character", "win", 30, None),
@@ -786,7 +788,40 @@ class TestRefundEstimationInReconcile:
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         second_line = next(l for l in result["lines"] if l["label"] == "Character Run 2 (obtained 2 of 2)")
-        refund_pill = second_line["pills"][4]
-        # 0.1105 * 30 = 3.315 -> 3, plus the +2 dupe bonus = 5
-        assert refund_pill["value"] == 5
-        assert refund_pill["color"] == "light_green"
+        # 0.1105 * 30 = 3.315 -> 3, base rate pill, unchanged by the dupe bonus.
+        base_refund_pill = second_line["pills"][4]
+        assert base_refund_pill["value"] == 3
+        assert base_refund_pill["color"] == "light_green"
+        # The +2 dupe bonus is its own separate "+" and number pill pair.
+        assert second_line["pills"][5] == {"kind": "operator", "value": "+", "color": "magenta",
+                                            "tooltip": TOOLTIPS["add_op"]}
+        dupe_pill = second_line["pills"][6]
+        assert dupe_pill["value"] == 2
+        assert dupe_pill["color"] == "light_green"
+        assert dupe_pill["tooltip"] == "A number of refunds wasn't given, and this is an additional character copy"
+        # The ledger itself used the combined 3 + 2 = 5 total refund: first
+        # copy 100 - 20 + 0 = 80, second copy 80 - 30 + 5 = 55.
+        assert second_line["pills"][7] == {"kind": "operator", "value": "=", "color": "magenta",
+                                            "tooltip": TOOLTIPS["equals_op"]}
+        assert second_line["pills"][8]["value"] == 55
+
+    def test_second_weapon_copy_win_with_unstated_refund_gets_dupe_bonus(self):
+        # Same mechanic on the weapon banner (W2+, not just C1+ on
+        # characters): the dupe bonus and its wording must say "weapon".
+        events = [
+            _event(1, "weapon", "win", 20, 0),
+            _event(2, "weapon", "win", 40, None),
+        ]
+        extracted = _blank(events=events, additional_weapon_copies_wanted=1)
+        result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        second_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 2 (obtained 2 of 2)")
+        # 0.0578 * 40 = 2.312 -> 2, base rate pill, unchanged by the dupe bonus.
+        assert second_line["pills"][4]["value"] == 2
+        assert second_line["pills"][5] == {"kind": "operator", "value": "+", "color": "magenta",
+                                            "tooltip": TOOLTIPS["add_op"]}
+        dupe_pill = second_line["pills"][6]
+        assert dupe_pill["value"] == 2
+        assert dupe_pill["tooltip"] == "A number of refunds wasn't given, and this is an additional weapon copy"
+        # 100 - 20 + 0 = 80, then 80 - 40 + 4 = 44.
+        assert second_line["pills"][8]["value"] == 44
