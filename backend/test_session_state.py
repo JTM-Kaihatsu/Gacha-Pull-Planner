@@ -210,13 +210,41 @@ def test_refund_exceeding_pity_returns_error():
     assert "exceeds" in result["error"]
 
 
-def test_events_consuming_more_than_budget_returns_error():
+def test_events_consuming_more_than_budget_becomes_a_conflict_not_a_decline():
     # Each event is individually valid (within the weapon's 0-80 hard pity),
-    # but together they consume more than the 100-pull budget.
+    # but together they consume more than the 100-pull budget: a genuine
+    # ambiguity (gained pulls since the initial situation? the initial
+    # number was wrong? something else?), not a plain parse failure, so
+    # this surfaces as a conflict to clarify, not a decline.
     events = [_event(1, "weapon", "loss", 70, 0), _event(2, "weapon", "loss", 70, 0)]
     result = reconcile(_blank(events=events), BASELINE_PARAMS, BASELINE_STATS)
     assert result["ok"] is False
-    assert "exceed the stated total budget" in result["error"]
+    assert result["conflict"] is True
+    assert len(result["conflicts"]) == 1
+    block = result["conflicts"][0]
+    assert block["conflict_key"] == "budget"
+    assert block["header"] == "For Total Pulls Used"
+    assert "You reported a total of 140 pulls used" in block["question"]
+    assert "started with only 100 pulls, 40 short" in block["question"]
+    assert "Did you gain 40 more pulls" in block["question"]
+    group = block["pills"][0]
+    assert group["kind"] == "group" and group["color"] == "red"
+    assert [p["value"] for p in group["pills"]] == [140, ">", 100]
+    # The first event (individually fine) still resolves normally.
+    first_line = next(l for l in result["lines"] if l["label"] == "Weapon Run 1 (obtained 0 of 1)")
+    assert _row(first_line) == [100, "−", 70, "+", 0, "=", 30, "LOSS"]
+
+
+def test_budget_conflict_on_the_first_event_has_no_resolved_lines():
+    # The overrun happens on the very first event: nothing precedes it,
+    # so lines is empty, matching a pity conflict's own first-event case.
+    params = {**BASELINE_PARAMS, "total_pulls": 50}
+    events = [_event(1, "weapon", "loss", 70, 0)]
+    result = reconcile(_blank(events=events), params, BASELINE_STATS)
+    assert result["ok"] is False
+    assert result["conflict"] is True
+    assert result["lines"] == []
+    assert result["conflicts"][0]["conflict_key"] == "budget"
 
 
 def test_conflicting_pulls_remaining_stated_returns_error():

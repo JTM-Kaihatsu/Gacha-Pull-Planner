@@ -101,7 +101,7 @@ export default function FollowUpAdvisor({ baseline, confidence }) {
   async function handleSubmitClarifications() {
     if (!breakdown || breakdown.status !== 'conflict' || loading) return
     const clarifications = breakdown.conflicts
-      .map(c => ({ banner: c.banner, attempt_number: c.attempt_number,
+      .map(c => ({ conflict_key: conflictKey(c),
                    answer: (conflictAnswers[conflictKey(c)] || '').trim() }))
       .filter(c => c.answer.length > 0)
     if (clarifications.length === 0) return

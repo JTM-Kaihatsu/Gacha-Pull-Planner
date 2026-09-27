@@ -264,7 +264,17 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
     weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
-    running_pulls, any_unknown_pity, error)."""
+    running_pulls, any_unknown_pity, error, budget_conflict).
+
+    A budget overrun (the events alone consume more than the starting
+    budget) is a genuine ambiguity, not a parse failure, the user may have
+    gained pulls since the initial situation, the initial number may have
+    been wrong, or a reported event number may simply be wrong; it's
+    reported separately from `error` so the caller can offer a clarifying
+    question instead of declining outright. At most one can ever occur,
+    it's a single cumulative running total, not an independent per-event
+    check, so `budget_conflict` is a single dict or None, never a list."""
+    starting_budget = running_pulls
     counts = {"character": 0, "weapon": 0}
     guarantees = {"character": False, "weapon": False}
     run_index = {"character": 0, "weapon": 0}
@@ -320,10 +330,15 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
         running_pulls += refunds
 
         if running_pulls < 0:
+            budget_conflict = {
+                "event_order": event["event_order"],
+                "starting_budget": starting_budget,
+                "consumed": starting_budget - running_pulls,
+                "overrun": -running_pulls,
+            }
             return (lines, counts["character"], counts["weapon"], guarantees["character"],
                     guarantees["weapon"], run_index["character"], run_index["weapon"], running_pulls,
-                    any_unknown_pity,
-                    f"event_order {event['event_order']}: pulls consumed exceed the stated total budget")
+                    any_unknown_pity, None, budget_conflict)
 
         refund_pill = (
             {
@@ -389,7 +404,7 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
         })
 
     return (lines, counts["character"], counts["weapon"], guarantees["character"], guarantees["weapon"],
-            run_index["character"], run_index["weapon"], running_pulls, any_unknown_pity, None)
+            run_index["character"], run_index["weapon"], running_pulls, any_unknown_pity, None, None)
 
 
 def _build_conflict_block(conflict):
@@ -402,6 +417,12 @@ def _build_conflict_block(conflict):
     banner_label = _BANNER_LABEL[conflict["banner"]]
     reported = conflict["reported_pulls"]
     return {
+        # A stable id the frontend echoes back on the clarification answer
+        # so advisor.py can match it to whichever conflict a fresh
+        # re-extraction rediscovers, without the client needing to know
+        # this conflict's own internal shape (banner/attempt_number here,
+        # nothing at all for a budget conflict, see _build_budget_conflict_block).
+        "conflict_key": f"pity:{conflict['banner']}:{conflict['attempt_number']}",
         "event_order": conflict["event_order"],
         "banner": conflict["banner"],
         "attempt_number": conflict["attempt_number"],
@@ -451,17 +472,74 @@ def _build_conflict_result(events, conflicts, baseline_params, total_pulls_budge
     if resolved_events:
         carryover = _normalize_pity_carryover(resolved_events, baseline_params)
         if carryover["ok"]:
-            event_lines, *_, process_error = _process_events(
+            event_lines, *_, process_error, process_budget_conflict = _process_events(
                 carryover["events"], total_pulls_budget, desired_characters, desired_weapons,
                 baseline_params["full_4star_chars"],
             )
-            if not process_error:
+            if not process_error and not process_budget_conflict:
                 lines = event_lines
 
     return {
         "applies": True, "ok": False, "conflict": True,
         "lines": lines,
         "conflicts": [_build_conflict_block(c) for c in conflicts],
+    }
+
+
+def _build_budget_conflict_block(conflict):
+    """The "you reported using more pulls than you started with" clarifying
+    block: a header, the question offering the three likely explanations
+    (gained pulls since the initial situation, the initial number was
+    actually different, or something else), and the two conflicting
+    figures wrapped in a red-bordered group, the same visual device as a
+    pity conflict."""
+    consumed = conflict["consumed"]
+    starting_budget = conflict["starting_budget"]
+    overrun = conflict["overrun"]
+    return {
+        # At most one budget conflict can ever occur per reconciliation
+        # (it's a single cumulative running total, not an independent
+        # per-event check), so this key never needs a per-conflict suffix.
+        "conflict_key": "budget",
+        "event_order": conflict["event_order"],
+        "header": "For Total Pulls Used",
+        "question": (
+            f"You reported a total of {consumed} pulls used across your events, but the initial "
+            f"situation states you started with only {starting_budget} pulls, {overrun} short. Did "
+            f"you gain {overrun} more pulls since the initial situation, did the initial number of "
+            f"pulls change, or is it something else?"
+        ),
+        "pills": [{
+            "kind": "group",
+            "color": "red",
+            "pills": [
+                {
+                    "kind": "number", "value": consumed, "color": "red",
+                    "tooltip": (
+                        f"Total pulls consumed by your reported events, {overrun} more than the "
+                        f"{starting_budget}-pull starting budget"
+                    ),
+                },
+                {"kind": "operator", "value": ">", "color": "red", "tooltip": "Exceeds"},
+                {
+                    "kind": "number", "value": starting_budget, "color": "red",
+                    "tooltip": "The starting number of pulls from the initial situation",
+                },
+            ],
+        }],
+    }
+
+
+def _build_budget_conflict_result(lines, conflict):
+    """Build the response for a budget-overrun conflict: the pill lines
+    _process_events already built for every event before the overrun
+    (nothing about them is in question), plus the one flagged block for
+    the overrun itself. Unlike a pity conflict, at most one of these can
+    ever occur per reconciliation."""
+    return {
+        "applies": True, "ok": False, "conflict": True,
+        "lines": lines,
+        "conflicts": [_build_budget_conflict_block(conflict)],
     }
 
 
@@ -528,8 +606,10 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
      char_events, weapon_events, running_pulls, any_unknown_pity,
-     error) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons,
-                               baseline_params["full_4star_chars"])
+     error, budget_conflict) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons,
+                                                baseline_params["full_4star_chars"])
+    if budget_conflict:
+        return _build_budget_conflict_result(event_lines, budget_conflict)
     if error:
         return {"applies": True, "ok": False, "error": error}
 

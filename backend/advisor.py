@@ -277,13 +277,21 @@ EXTRACTION_SYSTEM_PROMPT = (
     "alternative to the earlier ones, never a continuation of them. Do not invent a branch "
     "for a question that only actually describes one path. If (and only if) the context "
     "below includes a prior clarifying question and the user's answer to it, apply that "
-    "answer to correct the specific event it was about: if they confirmed a reported number "
-    "was a TOTAL including existing pity, set that event's pity_is_absolute to true using "
-    "the exact same number; if they gave a different number for that event, use their "
-    "corrected number instead; if they said the banner's STARTING pity or guarantee itself "
-    "was wrong (not the event), report that in starting_situation_corrections instead and "
-    "leave the event as originally reported. starting_situation_corrections is null on every "
-    "other question."
+    "answer to correct the specific thing it was about. For a pity clarifying question: if "
+    "they confirmed a reported number was a TOTAL including existing pity, set that event's "
+    "pity_is_absolute to true using the exact same number; if they gave a different number "
+    "for that event, use their corrected number instead; if they said the banner's STARTING "
+    "pity or guarantee itself was wrong (not the event), report that in "
+    "starting_situation_corrections instead and leave the event as originally reported. For a "
+    "budget clarifying question (the events reported use more pulls than the stated starting "
+    "budget): if they said they gained pulls since the initial situation, or that the initial "
+    "pull count itself was different, set total_pulls_restated to whatever total makes the "
+    "reported events fit (the original starting total plus however many they gained, or "
+    "whatever total they directly stated); if instead they said one of the reported event "
+    "numbers itself was wrong, correct that event's own pity_at_outcome or refund_count "
+    "instead and leave total_pulls_restated null. starting_situation_corrections is null on "
+    "every other question, and total_pulls_restated is null unless a budget clarifying "
+    "question's answer, or the question itself, directly restates the total."
 )
 
 RUN_SIMULATION_TOOL = {
@@ -709,12 +717,14 @@ def _reconcile_scenario_list(extracted, baseline_params, baseline_stats):
     the rest, so a retry re-extracts the whole set fresh instead of trying
     to patch just one branch in isolation.
 
-    A pity conflict (a banner's reported pulls don't fit its actual
-    starting pity) is only surfaced as its own rich, clarifiable result
-    when the question is a single scenario; a conflict inside one branch
-    of a multi-scenario question falls back to the ordinary decline path
-    instead; resolving one specific branch's ambiguity through the same
-    human-clarification UI as the single-scenario case is not supported."""
+    A conflict (a banner's reported pulls not fitting its actual starting
+    pity, or the reported events together using more pulls than the
+    stated starting budget) is only surfaced as its own rich, clarifiable
+    result when the question is a single scenario; a conflict inside one
+    branch of a multi-scenario question falls back to the ordinary
+    decline path instead; resolving one specific branch's ambiguity
+    through the same human-clarification UI as the single-scenario case
+    is not supported."""
     scenarios = _scenarios_from_extraction(extracted)
     reconciled_scenarios = []
     for scenario in scenarios:
@@ -743,33 +753,45 @@ def _build_clarification_feedback(conflicts, clarifications):
     """Turn the user's typed answers to one or more conflict clarifying
     questions into error_feedback text for a re-extraction, matched to the
     freshly-rediscovered conflicts (not whatever the frontend echoes back)
-    by banner + attempt_number, the same pairing the conflict blocks were
-    built with in the first place."""
-    answers = {(c["banner"], c["attempt_number"]): c["answer"] for c in clarifications if c.get("answer")}
+    by conflict_key, the same stable id the conflict blocks were built
+    with in the first place (see session_state.py's _build_conflict_block
+    and _build_budget_conflict_block)."""
+    answers = {c["conflict_key"]: c["answer"] for c in clarifications if c.get("answer")}
     parts = []
     for conflict in conflicts:
-        answer = answers.get((conflict["banner"], conflict["attempt_number"]))
+        answer = answers.get(conflict["conflict_key"])
         if not answer:
             continue
-        parts.append(
-            f'For the {conflict["banner"]} banner, attempt {conflict["attempt_number"]} of '
-            f'{conflict["total_attempts"]} (reported as {conflict["reported_pulls"]} pulls spent), '
-            f'you asked: "{conflict["question"]}" The user answered: "{answer}"'
-        )
+        if conflict["conflict_key"] == "budget":
+            parts.append(f'You asked: "{conflict["question"]}" The user answered: "{answer}"')
+        else:
+            parts.append(
+                f'For the {conflict["banner"]} banner, attempt {conflict["attempt_number"]} of '
+                f'{conflict["total_attempts"]} (reported as {conflict["reported_pulls"]} pulls spent), '
+                f'you asked: "{conflict["question"]}" The user answered: "{answer}"'
+            )
     return " ".join(parts)
 
 
 def _classify_resolution(conflict, extracted, fallback_answer):
-    """After a retry extraction meant to resolve one conflict, work out
-    which of the three ways the user resolved it, by comparing the retry's
-    output against what originally conflicted, so the right hardcoded
-    label ends up on the annotation: never let the model choose its own
-    label text for this, the exact prefix matters and prompt-only
-    instructions to relay specific wording have repeatedly not been
-    followed reliably elsewhere in this module.
+    """Dispatch to the right classifier for this conflict's kind (see
+    session_state.py's _build_conflict_block for pity, and
+    _build_budget_conflict_block for a budget overrun): never let the
+    model choose its own label text for this, the exact prefix matters
+    and prompt-only instructions to relay specific wording have
+    repeatedly not been followed reliably elsewhere in this module.
 
     Returns (kind, description_text) or None if nothing about this
-    conflict's banner/event actually changed (the retry didn't apply it)."""
+    conflict actually changed (the retry didn't apply it)."""
+    if conflict["conflict_key"] == "budget":
+        return _classify_budget_resolution(conflict, extracted, fallback_answer)
+    return _classify_pity_resolution(conflict, extracted, fallback_answer)
+
+
+def _classify_pity_resolution(conflict, extracted, fallback_answer):
+    """After a retry extraction meant to resolve one pity conflict, work
+    out which of the three ways the user resolved it, by comparing the
+    retry's output against what originally conflicted."""
     banner_label = conflict["banner"].capitalize()
 
     for correction in extracted.get("starting_situation_corrections") or []:
@@ -796,6 +818,23 @@ def _classify_resolution(conflict, extracted, fallback_answer):
             ))
 
     return None
+
+
+def _classify_budget_resolution(conflict, extracted, fallback_answer):
+    """After a retry extraction meant to resolve a budget-overrun
+    conflict, work out which of two ways the user resolved it. "I gained
+    pulls since the initial situation" and "the initial number was
+    actually different" both resolve identically (a corrected total_pulls
+    for this run), there's no way to tell those two framings apart after
+    the fact, and no need to: either way the starting situation for this
+    run is what changed, not a reported event number, so both share the
+    same label. Only when the retry instead corrects a reported event's
+    own number (total_pulls_restated left alone) does the "wrong prompt
+    number" label apply."""
+    restated = extracted.get("total_pulls_restated")
+    if restated is not None:
+        return ("starting_situation", f"Starting budget corrected to {restated} total pulls.")
+    return ("prompt", fallback_answer)
 
 
 def _apply_starting_situation_corrections(baseline_params, corrections):
@@ -863,8 +902,7 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
                         for conflict in result["conflicts"]:
                             answer = next(
                                 (c["answer"] for c in clarifications
-                                 if c["banner"] == conflict["banner"]
-                                 and c["attempt_number"] == conflict["attempt_number"]),
+                                 if c["conflict_key"] == conflict["conflict_key"]),
                                 None,
                             )
                             if not answer:
@@ -992,9 +1030,10 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     (the question reconciled into two or more mutually exclusive scenarios,
     one group per branch, see _answer_branching_scenarios), {"status":
     "conflict", "lines": [...], "conflicts": [...]} (one or more banners'
-    reported pulls don't fit their actual starting pity, a genuine
-    ambiguity for the user to resolve, not a plain parse failure; answer_text
-    is empty, there is nothing to say until it's resolved), or {"status":
+    reported pulls don't fit their actual starting pity, or the reported
+    events together use more pulls than the stated starting budget, a
+    genuine ambiguity for the user to resolve, not a plain parse failure;
+    answer_text is empty, there is nothing to say until it's resolved), or {"status":
     "error", "message": "..."} (an event sequence was described but could
     not be reconciled; see PARSE_FAILURE_MESSAGE for the answer text in
     that case)."""
