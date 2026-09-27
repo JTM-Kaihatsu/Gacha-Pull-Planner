@@ -1059,7 +1059,7 @@ class TestPityConflictClarification:
 
         answer, runs, breakdown = run_advisor(
             params, stats, "I won the weapon after 60 pulls, how am I doing?",
-            clarifications=[{"banner": "weapon", "attempt_number": 1,
+            clarifications=[{"conflict_key": "pity:weapon:1",
                               "answer": "60 total including existing pity"}],
         )
 
@@ -1096,7 +1096,7 @@ class TestPityConflictClarification:
 
         answer, runs, breakdown = run_advisor(
             params, stats, "I won the weapon after 60 pulls, how am I doing?",
-            clarifications=[{"banner": "weapon", "attempt_number": 1,
+            clarifications=[{"conflict_key": "pity:weapon:1",
                               "answer": "actually my weapon pity was only 10, not 22"}],
         )
 
@@ -1127,7 +1127,7 @@ class TestPityConflictClarification:
 
         answer, runs, breakdown = run_advisor(
             params, stats, "I won the weapon after 60 pulls, how am I doing?",
-            clarifications=[{"banner": "weapon", "attempt_number": 1,
+            clarifications=[{"conflict_key": "pity:weapon:1",
                               "answer": "sorry, I meant 40 pulls, not 60"}],
         )
 
@@ -1159,8 +1159,8 @@ class TestPityConflictClarification:
             params, stats,
             "I won the character after 85 pulls and lost the weapon after 60 pulls, how am I doing?",
             clarifications=[
-                {"banner": "character", "attempt_number": 1, "answer": "85 total including existing pity"},
-                {"banner": "weapon", "attempt_number": 1, "answer": "60 total including existing pity"},
+                {"conflict_key": "pity:character:1", "answer": "85 total including existing pity"},
+                {"conflict_key": "pity:weapon:1", "answer": "60 total including existing pity"},
             ],
         )
 
@@ -1196,6 +1196,94 @@ class TestPityConflictClarification:
 
         assert breakdown["status"] == "error"
         assert answer == PARSE_FAILURE_MESSAGE
+
+
+class TestBudgetConflictClarification:
+    """The reported events together use more pulls than the stated
+    starting budget: a genuine ambiguity (gained pulls since the initial
+    situation? the initial number was wrong? something else?), not a
+    parse failure, so it's surfaced as a conflict to clarify."""
+
+    def test_budget_conflict_is_returned_immediately_without_auto_retry(self, monkeypatch):
+        # 50-pull budget, but the reported loss alone spends 70.
+        event = _ps_event(1, "weapon", "loss", 70, refunds=0)
+        fake = _FakeClient([_extraction_response(events=[event])])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+
+        params = {**BASELINE_PARAMS, "total_pulls": 50}
+        stats = {**BASELINE_STATS, "initial_pulls": 50}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I lost the weapon after 70 pulls, how am I doing?",
+        )
+
+        assert answer == ""
+        assert runs == []
+        assert breakdown["status"] == "conflict"
+        assert len(breakdown["conflicts"]) == 1
+        conflict = breakdown["conflicts"][0]
+        assert conflict["conflict_key"] == "budget"
+        assert conflict["header"] == "For Total Pulls Used"
+        assert "You reported a total of 70 pulls used" in conflict["question"]
+        assert "started with only 50 pulls, 20 short" in conflict["question"]
+        # A genuine ambiguity only a human can resolve: no automatic retry.
+        assert len(fake.calls) == 1
+
+    def test_clarification_correcting_the_starting_budget_resolves_the_conflict(self, monkeypatch):
+        # Same event reported unchanged; the retry restates the total
+        # budget itself (covers both "I gained pulls" and "the initial
+        # number was wrong", they resolve identically).
+        conflict_event = _ps_event(1, "weapon", "loss", 70, refunds=0)
+        fake = _FakeClient([
+            _extraction_response(events=[conflict_event]),
+            _extraction_response(events=[conflict_event], total_pulls_restated=150),
+            _response(_msg(content="With the extra pulls you're in a solid spot.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        params = {**BASELINE_PARAMS, "total_pulls": 50}
+        stats = {**BASELINE_STATS, "initial_pulls": 50}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I lost the weapon after 70 pulls, how am I doing?",
+            clarifications=[{"conflict_key": "budget",
+                              "answer": "I gained 100 pulls from an event since then"}],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER MODIFICATION TO INITIAL SITUATION: ",
+             "text": "Starting budget corrected to 150 total pulls."},
+        ]
+        assert answer == "With the extra pulls you're in a solid spot."
+
+    def test_clarification_correcting_the_prompt_number_resolves_the_budget_conflict(self, monkeypatch):
+        conflict_event = _ps_event(1, "weapon", "loss", 70, refunds=0)
+        corrected_event = _ps_event(1, "weapon", "loss", 30, refunds=0)
+        fake = _FakeClient([
+            _extraction_response(events=[conflict_event]),
+            _extraction_response(events=[corrected_event]),
+            _response(_msg(content="30 pulls fits your budget fine.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+
+        params = {**BASELINE_PARAMS, "total_pulls": 50}
+        stats = {**BASELINE_STATS, "initial_pulls": 50}
+
+        answer, runs, breakdown = run_advisor(
+            params, stats, "I lost the weapon after 70 pulls, how am I doing?",
+            clarifications=[{"conflict_key": "budget",
+                              "answer": "sorry, I meant 30 pulls, not 70"}],
+        )
+
+        assert breakdown["status"] == "ok"
+        assert breakdown["annotations"] == [
+            {"label": "USER MODIFICATION TO PROMPT: ",
+             "text": "sorry, I meant 30 pulls, not 70"},
+        ]
+        assert answer == "30 pulls fits your budget fine."
 
 
 class TestToolExecutor:

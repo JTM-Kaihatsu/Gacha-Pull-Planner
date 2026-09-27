@@ -47,8 +47,12 @@ class SimRequest(BaseModel):
     weapon_pity_config: PityConfig = PityConfig(base_rate=0.008, soft_pity_start=65, hard_pity=80)
 
 class Clarification(BaseModel):
-    banner: Literal["character", "weapon"]
-    attempt_number: int = Field(..., ge=1)
+    # A stable id echoed straight back from the conflict block the answer
+    # is for (e.g. "pity:weapon:1" or "budget"), see session_state.py's
+    # _build_conflict_block / _build_budget_conflict_block. Opaque to this
+    # endpoint on purpose: the client never needs to know a conflict's own
+    # shape, just to echo back the id it was given.
+    conflict_key: str = Field(..., min_length=1, max_length=100)
     answer: str = Field(..., min_length=1, max_length=500)
 
 class AdviseRequest(SimRequest):

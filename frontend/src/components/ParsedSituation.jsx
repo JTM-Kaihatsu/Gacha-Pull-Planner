@@ -140,11 +140,13 @@ function StartingSituation({ baseline }) {
   )
 }
 
-// A single {"banner", "attempt_number"} pity conflict, matching exactly one
-// clarifying question. Keyed this way (not by array index) so an answer
-// survives the conflicts array being rebuilt by a fresh re-extraction.
+// The backend's own stable id for one conflict (e.g. "pity:weapon:1" or
+// "budget"), matching exactly one clarifying question. Used as the key
+// (not array index) so an answer survives the conflicts array being
+// rebuilt by a fresh re-extraction, and echoed straight back on submit;
+// this page never needs to know a conflict's own internal shape.
 export function conflictKey(conflict) {
-  return `${conflict.banner}:${conflict.attempt_number}`
+  return conflict.conflict_key
 }
 
 // One "did you mean total including existing pity" block: the header
