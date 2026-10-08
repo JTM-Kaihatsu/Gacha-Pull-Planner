@@ -559,7 +559,13 @@ def reconcile(extracted, baseline_params, baseline_stats):
         return {"applies": False}
 
     events = extracted.get("events") or []
-    if not events:
+    goal_only = not events and any(
+        extracted.get(key) for key in (
+            "additional_character_copies_wanted", "additional_weapon_copies_wanted",
+            "characters_wanted_total", "weapons_wanted_total",
+        )
+    )
+    if not events and not goal_only:
         return {"applies": True, "ok": False,
                 "error": "has_event_sequence was true but no events were reported"}
 
@@ -578,8 +584,14 @@ def reconcile(extracted, baseline_params, baseline_stats):
     # for whatever preceded it, using the real goal.
     additional_chars = extracted.get("additional_character_copies_wanted") or 0
     additional_weapons = extracted.get("additional_weapon_copies_wanted") or 0
-    desired_characters = max(baseline_stats["desired_characters"] + additional_chars, 0)
-    desired_weapons = max(baseline_stats["desired_weapons"] + additional_weapons, 0)
+    # An explicit replacement ("change my goal to ...") overrides the
+    # baseline total outright; anything else adds to it.
+    chars_total = extracted.get("characters_wanted_total")
+    weapons_total = extracted.get("weapons_wanted_total")
+    desired_characters = max(
+        chars_total if chars_total is not None else baseline_stats["desired_characters"] + additional_chars, 0)
+    desired_weapons = max(
+        weapons_total if weapons_total is not None else baseline_stats["desired_weapons"] + additional_weapons, 0)
 
     if desired_characters > MAX_CHARACTER_COPIES:
         return {"applies": True, "ok": False,
@@ -796,6 +808,8 @@ def reconcile(extracted, baseline_params, baseline_stats):
 
     return {
         "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": False,
+        "goal_only": goal_only,
+        "goal_text": remaining_goal_text(desired_characters, desired_weapons),
         "strategy": strategy,
         "total_pulls": total_pulls,
         "start_char_pity": start_char_pity,
