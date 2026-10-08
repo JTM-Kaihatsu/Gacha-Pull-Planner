@@ -1361,3 +1361,29 @@ class TestValidateStrategy:
 
     def test_bad_copies(self):
         assert _validate_strategy([{"banner": "char", "copies": 0}]) is not None
+
+
+class TestGoalOnlyHypotheticals:
+    def test_goal_change_without_events_is_reconciled_and_displayed(self, monkeypatch):
+        # No events (has_event_sequence false) but an added character copy:
+        # must go through reconciliation, not the model's free-form tool loop.
+        fake = _FakeClient([
+            _response(_msg(content=json.dumps({
+                "has_event_sequence": False, "events": [],
+                "pulls_remaining_stated": None, "additional_pulls_stated": None,
+                "total_pulls_restated": None,
+                "additional_character_copies_wanted": 1, "additional_weapon_copies_wanted": None,
+            }))),
+            _response(_msg(content="Adding a copy lowers your odds.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
+        monkeypatch.setattr(advisor, "_spending_tiers", lambda *a, **k: ([], [], []))
+
+        answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "what if I go for C1?")
+
+        goal = _find_line(breakdown, "Current Goal")
+        assert goal["pills"][0]["value"] == "2 characters and 1 weapon"
+        assert "AI Agent Simulated Result 1" in [l["label"] for l in breakdown["lines"]]
+        assert answer == "Adding a copy lowers your odds."
+        assert len(fake.calls) == 2   # extraction + answer, no tool loop

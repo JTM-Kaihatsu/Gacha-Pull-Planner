@@ -127,6 +127,14 @@ _SCENARIO_FIELDS = {
         "type": ["integer", "null"],
         "description": "Same rule as additional_character_copies_wanted (a signed change, positive to add, negative to reduce below the original goal), for the weapon banner.",
     },
+    "characters_wanted_total": {
+        "type": ["integer", "null"],
+        "description": "ONLY when the question explicitly REPLACES the goal with a stated total, for example 'what if I change my goal to just one character and no weapon', 'what if I only wanted 2 characters'. A total number of character copies wanted, not a change. Null otherwise: wording like 'if I go for C1', 'one more copy', 'also add a second copy' ADDS to the baseline goal and belongs in additional_character_copies_wanted instead, never here.",
+    },
+    "weapons_wanted_total": {
+        "type": ["integer", "null"],
+        "description": "Same rule as characters_wanted_total, for the weapon banner: only an explicit replacement of the goal with a stated total, null otherwise.",
+    },
 }
 
 # One further branch beyond the primary scenario: same shape as the fields
@@ -185,6 +193,10 @@ SESSION_STATE_SCHEMA = {
             ),
             "items": SCENARIO_SCHEMA,
         },
+        "reply_language": {
+            "type": ["string", "null"],
+            "description": "The language the question itself is written in, as its English name (for example 'English', 'Japanese'). Null if unsure.",
+        },
         "starting_situation_corrections": {
             "type": ["array", "null"],
             "description": (
@@ -209,7 +221,7 @@ SESSION_STATE_SCHEMA = {
     },
     "required": [
         "has_event_sequence", *_SCENARIO_FIELDS.keys(), "condition_label", "additional_scenarios",
-        "starting_situation_corrections",
+        "starting_situation_corrections", "reply_language",
     ],
     "additionalProperties": False,
 }
@@ -255,7 +267,13 @@ EXTRACTION_SYSTEM_PROMPT = (
     "If the question has no concrete outcome at all to extract, no banner/win-or-loss/"
     "pity, just a pure strategy or what-if question like 'how should I split my budget' "
     "or 'what if I had 20 more pulls', set has_event_sequence to false and events to an "
-    "empty list. Also report, only if explicitly stated: a direct restatement of pulls "
+    "empty list. A goal change with no events at all (for example 'what if I go for C1', 'what if I "
+    "also want a second weapon copy', in any language, such as 1\u51f8 / \u51f8\u3092\u8db3\u3059) is still "
+    "reported through the goal fields below even though has_event_sequence is false: wording that "
+    "wants MORE copies (C1 means one more copy than C0, W2 one more than W1) is a positive "
+    "additional_*_copies_wanted added to the baseline goal, never a replacement of it; only wording "
+    "that explicitly changes or replaces the goal to a stated total uses characters_wanted_total / "
+    "weapons_wanted_total. Also report, only if explicitly stated: a direct restatement of pulls "
     "remaining (pulls_remaining_stated, required whenever any event's pity is null), "
     "an amount to add on top of whatever remains, not a total "
     "(additional_pulls_stated), a restated total pull budget (total_pulls_restated), "
@@ -693,6 +711,23 @@ SYSTEM_PROMPT = (
 )
 
 
+_GOAL_CHANGE_FIELDS = (
+    "additional_character_copies_wanted", "additional_weapon_copies_wanted",
+    "characters_wanted_total", "weapons_wanted_total",
+)
+
+
+def _has_goal_change(extracted):
+    """True when the question changes the goal even though it reported no
+    events at all ("what if I go for C1"). Such a question used to fall
+    through to the model's free-form tool loop, which silently chose its
+    own strategy and showed no goal anywhere; routing it through
+    reconcile() with an empty event list instead makes the resulting goal
+    a deterministic, displayed fact (a "Current Goal" line), the same as
+    any other reconciled scenario."""
+    return any(extracted.get(key) for key in _GOAL_CHANGE_FIELDS)
+
+
 def _scenarios_from_extraction(extracted):
     """Flatten one extraction result into a list of scenario dicts, each
     shaped exactly like reconcile()'s expected input (has_event_sequence
@@ -878,12 +913,12 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
     reconciliation failed instead of quietly answering from the unadjusted
     baseline as if nothing had been stated."""
     extracted = _extract_session_state(client, model, question, baseline_stats)
-    if not extracted.get("has_event_sequence"):
+    if not extracted.get("has_event_sequence") and not _has_goal_change(extracted):
         return {"applies": False}
 
     result = _reconcile_scenario_list(extracted, baseline_params, baseline_stats)
     if result["ok"]:
-        return {"applies": True, **result}
+        return {"applies": True, "reply_language": extracted.get("reply_language"), **result}
 
     if result.get("conflict"):
         if clarifications:
@@ -1215,15 +1250,36 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
                 "bigger ask, say so plainly rather than treating every step as equally reasonable."
             )
 
-        context = (
-            f"Verified session state (already reconciled from the question, treat as fact "
-            f"and do not restate it differently): {lines_text} "
-            f"Original full goal was {goal_description} (goal {goal_label}), but what actually "
-            f"still remains to obtain, after the events above, is: {remaining}. The figures "
-            f"below were run for exactly that remaining goal, not the original one; describe "
-            f"success and failure only in terms of what remains, anything not listed there is "
-            f"already obtained and must not be described as still needed, at risk, or a "
-            f"possible failure. "
+        if scenario.get("goal_only"):
+            # A pure goal change: say plainly what the goal now is, in
+            # words, and leave out the usual "original goal vs what
+            # remains" framing, which a question wording like "C1" or
+            # "1凸" kept colliding with (the model re-derived its own,
+            # wrong, copy count from it instead of using the stated goal).
+            context = (
+                f"Verified scenario (already reconciled from the question, treat as fact, do not "
+                f"re-derive it from the question's own wording such as C1/W2/1凸): the goal being "
+                f"asked about is exactly {remaining}, starting from the current pity and guarantee "
+                f"shown here: {lines_text} The user's baseline goal was {goal_description}, and "
+                f"their wording (C1, W2, 1凸 and so on) means ADDING copies on top of that baseline, "
+                f"which gives exactly {remaining}; that is what they intend, do not reinterpret it "
+                f"as a smaller or different goal. All the simulations needed are ALREADY run below, "
+                f"so answer now and never say you will run or check another one. Do not mention any "
+                f"other goal or its odds (none are given). Every percentage you state must be "
+                f"copied from the figures below. "
+            )
+        else:
+            context = (
+                f"Verified session state (already reconciled from the question, treat as fact "
+                f"and do not restate it differently): {lines_text} "
+                f"Original full goal was {goal_description} (goal {goal_label}), but what actually "
+                f"still remains to obtain, after the events above, is: {remaining}. The figures "
+                f"below were run for exactly that remaining goal, not the original one; describe "
+                f"success and failure only in terms of what remains, anything not listed there is "
+                f"already obtained and must not be described as still needed, at risk, or a "
+                f"possible failure. "
+            )
+        context += (
             f"The following pull-count figures have ALREADY been run or computed for you; use only "
             f"these exact numbers, never invent a further pull count or success rate that isn't "
             f"listed here. " + " ".join(tier_facts) + " "
@@ -1248,10 +1304,29 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         breakdown = {"status": "error", "message": "Could not parse a clear sequence of pull events from this question."}
         return PARSE_FAILURE_MESSAGE, [], breakdown
 
+    follow_up = question
+    if reconciled.get("applies") and reconciled.get("ok") and reconciled["scenarios"][0].get("goal_only"):
+        # The user's own notation (C1, W2, 1凸, in any language) is what
+        # the model kept re-reading as a smaller or different goal than
+        # the one reconciliation already settled on, so for a pure goal
+        # change it's shown the reconciled question instead of the raw
+        # wording. Language-independent by construction.
+        follow_up = (
+            f"How likely am I to reach the goal of {reconciled['scenarios'][0]['goal_text']}, "
+            f"and does getting more pulls change that? Reply in {reconciled.get('reply_language') or 'English'}."
+        )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{context}\n\nFollow-up question: {question}"},
+        {"role": "user", "content": f"{context}\n\nFollow-up question: {follow_up}"},
     ]
+
+    if reconciled.get("applies") and reconciled.get("ok") and reconciled["scenarios"][0].get("goal_only"):
+        # A pure goal-change question is already fully answered by the
+        # deterministic runs above; offering the tool only invited a
+        # redundant re-run under a strategy the model chose itself, which
+        # then showed up as an unexplained extra result.
+        response = client.chat.completions.create(model=model, messages=messages, temperature=ADVISOR_TEMPERATURE)
+        return (response.choices[0].message.content or "").strip(), runs, breakdown
 
     for _ in range(max_tool_calls):
         response = client.chat.completions.create(

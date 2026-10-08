@@ -853,3 +853,28 @@ class TestRefundEstimationInReconcile:
         assert dupe_pill["tooltip"] == "A number of refunds wasn't given, and this is an additional weapon copy"
         # 100 - 20 + 0 = 80, then 80 - 40 + 4 = 44.
         assert second_line["pills"][8]["value"] == 44
+
+
+class TestGoalOnlyHypotheticals:
+    """A goal change with no events at all ("what if I go for C1") must
+    reconcile to a displayed, deterministic goal, additive to the baseline
+    by default, replacing it only when explicitly stated."""
+
+    def test_extra_copy_adds_to_the_baseline_goal_and_shows_it(self):
+        result = reconcile(_blank(events=[], additional_character_copies_wanted=1),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        assert result["remaining_characters"] == 2 and result["remaining_weapons"] == 1
+        goal = next(l for l in result["lines"] if l["label"] == "Current Goal")
+        assert goal["pills"][0]["value"] == "2 characters and 1 weapon"
+        assert result["total_pulls"] == BASELINE_PARAMS["total_pulls"]
+
+    def test_explicit_replacement_overrides_the_baseline_goal(self):
+        result = reconcile(_blank(events=[], characters_wanted_total=1, weapons_wanted_total=0),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is True
+        assert result["remaining_characters"] == 1 and result["remaining_weapons"] == 0
+
+    def test_no_events_and_no_goal_change_is_still_an_error(self):
+        result = reconcile(_blank(events=[]), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] is False
