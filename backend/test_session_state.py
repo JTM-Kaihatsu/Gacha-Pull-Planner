@@ -883,9 +883,10 @@ class TestGoalOnlyHypotheticals:
         assert result["ok"] is False
 
 
-def _step(order, banner, on_loss, copies=1, max_pulls=None, stop_at_pity=None, on_cap=None):
+def _step(order, banner, on_loss, copies=1, max_pulls=None, stop_at_pity=None, on_cap=None, skip_to_banner=None):
     return {"step_order": order, "banner_type": banner, "copies": copies, "on_loss": on_loss,
-            "max_pulls": max_pulls, "stop_at_pity": stop_at_pity, "on_cap": on_cap}
+            "max_pulls": max_pulls, "stop_at_pity": stop_at_pity, "on_cap": on_cap,
+            "skip_to_banner": skip_to_banner}
 
 
 class TestConditionalPlan:
@@ -918,9 +919,9 @@ class TestConditionalPlan:
         assert result["start_char_guarantee"] is True
         assert result["strategy"] == [
             {"banner": "weapon", "copies": 1, "stop_on_loss": True, "max_pulls": None, "cap_pity": None,
-             "on_cap": None},
+             "on_cap": None, "skip_to": None},
             {"banner": "char", "copies": 1, "stop_on_loss": False, "max_pulls": None, "cap_pity": None,
-             "on_cap": None},
+             "on_cap": None, "skip_to": None},
         ]
 
     def test_a_plan_alone_starts_from_the_form_situation(self):
@@ -957,7 +958,8 @@ class TestPlanLimits:
         result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
         assert result["ok"] and result["plan"]
         assert result["strategy"][0] == {"banner": "char", "copies": 1, "stop_on_loss": False,
-                                         "max_pulls": 80, "cap_pity": None, "on_cap": "continue"}
+                                         "max_pulls": 80, "cap_pity": None, "on_cap": "continue",
+                                         "skip_to": None}
 
     def test_a_limit_without_on_cap_returns_error(self):
         plan = [_step(1, "character", "continue", max_pulls=80)]
@@ -1102,3 +1104,58 @@ class TestBuildRouteGroups:
         routes, omitted = build_route_groups(strategy, self._result(nodes, leaves))
         assert len(routes) == 6
         assert omitted == {"routes": 1, "chance": 10.0}
+
+
+class TestSkipOnLoss:
+    """'If I win the 50/50 I'll go for C1, then the weapon; if I lose, I'll
+    go straight to the weapon': a loss moves the plan on to a named step."""
+
+    STRATEGY = [{"banner": "char", "copies": 1, "skip_to": 2},
+                {"banner": "char", "copies": 1},
+                {"banner": "weapon", "copies": 1}]
+
+    def test_skip_finds_the_next_step_on_the_named_banner(self):
+        # The model names the banner; the C1 character step in between is
+        # passed over because code, not the model, finds the weapon step.
+        plan = [_step(1, "character", "skip", skip_to_banner="weapon"), _step(2, "character", "continue"),
+                _step(3, "weapon", "continue")]
+        result = reconcile(_blank(plan=plan), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] and [p["skip_to"] for p in result["strategy"]] == [2, None, None]
+        nxt = reconcile(_blank(plan=[_step(1, "character", "skip"), _step(2, "weapon", "continue")]),
+                        BASELINE_PARAMS, BASELINE_STATS)
+        assert nxt["strategy"][0]["skip_to"] == 1
+
+    def test_skip_must_point_at_a_later_step(self):
+        for plan, why in (([_step(1, "character", "skip")], "this is the last step"),
+                          ([_step(1, "character", "skip", skip_to_banner="weapon"), _step(2, "character", "continue")],
+                           "no later step is on the weapon banner")):
+            result = reconcile(_blank(plan=plan), BASELINE_PARAMS, BASELINE_STATS)
+            assert not result["ok"] and why in result["error"]
+
+    def test_a_switched_route_skips_the_passed_over_step(self):
+        built = {(): {"count": 4000, "avg_leftover": 260}}
+        for path, (count, left) in {
+            ("won",): (2000, 205), ("won", "won"): (2000, 126), ("won", "won", "won"): (2000, 77),
+            ("switched",): (2000, 205), ("switched", "skipped"): (2000, 205),
+            ("switched", "skipped", "won"): (2000, 142),
+        }.items():
+            built[path] = {"count": count, "avg_leftover": left}
+        routes, _ = build_route_groups(self.STRATEGY, {
+            "trials": 4000, "nodes": built,
+            "leaves": {("won", "won", "won"): 2000, ("switched", "skipped", "won"): 2000},
+        })
+        assert [r["label"] for r in routes] == [
+            "Route 1: Character won, then Character obtained, then Weapon obtained",
+            "Route 2: Character lost, moved on, then Weapon obtained",
+        ]
+        switched = routes[1]
+        assert [l["label"] for l in switched["lines"]] == [
+            "Run 1: Character, if lost, skip to Run 3", "Run 3: Weapon", "Route Result",
+        ]
+        assert _row(switched["lines"][0]) == [260, "LOSS 50.00%", "205 LEFT"]
+        assert _row(switched["lines"][-1]) == [
+            "50.00%", "×", "100.00%", "=", "50.00%", "142 LEFT", "OBTAINED: 1 WEAPON", "CHARACTER GUARANTEE: TRUE",
+        ]
+        assert switched["ending"] == "partial" and switched["guaranteed_banners"] == ["character"]
+        # The win route pulled the character again, so it keeps no guarantee.
+        assert routes[0]["guaranteed_banners"] == []

@@ -1536,7 +1536,8 @@ class TestConditionalPlanRouting:
         (call,) = self.plan_calls
         assert call["total_pulls"] == 233 and call["start_char_guarantee"] is True
         assert call["strategy"][0] == {"banner": "weapon", "copies": 1, "stop_on_loss": True,
-                                       "max_pulls": None, "cap_pity": None, "on_cap": None}
+                                       "max_pulls": None, "cap_pity": None, "on_cap": None,
+                                       "skip_to": None}
 
         # One extraction, one tool-free narration grounded in the routes.
         assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
@@ -1620,3 +1621,19 @@ class TestStoppingBranch:
         # Only the branch that keeps pulling was simulated: 120 - 30 + 3 = 93.
         assert seen == [93]
         assert "chooses to stop pulling here, keeping 53 pulls" in fake.calls[-1]["messages"][-1]["content"]
+
+
+class TestUnnumberedBranchesAreAPlan:
+    def test_an_outcome_with_no_number_is_sent_back_as_a_plan(self):
+        extracted = {
+            "has_event_sequence": True, "plan": None, **_scenario_fields(),
+            "branches": [
+                _branch("If I win the 50/50", [_event(1, "character", "win", None, None)],
+                        additional_character_copies_wanted=1),
+                _branch("If I lose the 50/50", [_event(1, "character", "loss", None, None)]),
+            ],
+        }
+        result = advisor._reconcile_scenario_list(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert not result["ok"]
+        assert "report the whole question as one plan instead" in result["error"]
+        assert "skip_to_banner" in result["error"]

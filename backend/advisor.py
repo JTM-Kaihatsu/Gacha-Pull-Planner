@@ -153,8 +153,12 @@ PLAN_STEP_SCHEMA = {
         "banner_type": {"type": "string", "enum": ["character", "weapon"]},
         "copies": {"type": "integer", "description": "Copies to pull for in this step, usually 1."},
         "on_loss": {
-            "type": "string", "enum": ["stop", "continue"],
-            "description": "'stop' if the question says to stop pulling entirely (conserve the remaining pulls) when this step's 5-star is lost, e.g. 'if I lose, I would stop there'. 'continue' otherwise, keep pulling on this banner until the copies are obtained.",
+            "type": "string", "enum": ["stop", "continue", "skip"],
+            "description": "'stop' if the question says to stop pulling entirely (conserve the remaining pulls) when this step's 5-star is lost, e.g. 'if I lose, I would stop there'. 'skip' if a loss moves the plan on to a later step instead, giving up this step, e.g. 'if I lose the 50/50, I'll switch to the weapon'. 'continue' otherwise, keep pulling on this banner until the copies are obtained.",
+        },
+        "skip_to_banner": {
+            "type": ["string", "null"], "enum": ["character", "weapon", None],
+            "description": "Only when on_loss is 'skip': the banner a loss switches to, e.g. 'weapon' for 'if I lose, I'll switch to the weapon'; the plan moves on to the next step on that banner. Null means simply the next step. Null when on_loss is not 'skip'.",
         },
         "max_pulls": {
             "type": ["integer", "null"],
@@ -169,7 +173,8 @@ PLAN_STEP_SCHEMA = {
             "description": "Only when max_pulls or stop_at_pity is set: 'continue' if, on hitting the limit without the copy, the question moves on to the next step ('then switch to the weapon'), 'stop' if it ends pulling there ('then stop'). Null when there is no limit.",
         },
     },
-    "required": ["step_order", "banner_type", "copies", "on_loss", "max_pulls", "stop_at_pity", "on_cap"],
+    "required": ["step_order", "banner_type", "copies", "on_loss", "skip_to_banner", "max_pulls", "stop_at_pity",
+                 "on_cap"],
     "additionalProperties": False,
 }
 
@@ -381,8 +386,13 @@ EXTRACTION_SYSTEM_PROMPT = (
     "me around 120 pulls') are still additional_pulls_stated. A step can also end at a stated "
     "limit instead: 'spend at most 80 pulls on the character, then switch to the weapon' is "
     "max_pulls 80 with on_cap 'continue' on the character step; 'I'll pull up to 75 pity, then stop' "
-    "is stop_at_pity 75 with on_cap 'stop'. plan is null for every question without a stop "
-    "condition or a limit. Pulls to keep aside and never spend ('keep 40 for the next banner') are "
+    "is stop_at_pity 75 with on_cap 'stop'. A loss can also move the plan on rather than stop it: 'if I "
+    "win the 50/50 I'll go for C1, then the weapon; if I lose, I'll go straight to the weapon' is three "
+    "steps, character (copies 1, on_loss 'skip', skip_to_banner 'weapon'), character again for the C1 copy "
+    "(copies 1), then weapon, so a win goes through C1 and a loss jumps to the weapon. A win or loss "
+    "with no stated pity or pull number is never an event or a branch: the simulation decides it, so it "
+    "is a plan step like these. plan is null for every question without a stop, a skip, or a "
+    "limit. Pulls to keep aside and never spend ('keep 40 for the next banner') are "
     "reserve_pulls, with or without a plan. A pure budget what-if with no events, such as 'what if "
     "I had 20 more pulls' (additional_pulls_stated 20) or 'what if I had 200 pulls' "
     "(total_pulls_restated 200), is still reported through those fields even though "
@@ -965,6 +975,17 @@ def _reconcile_scenario_list(extracted, baseline_params, baseline_stats):
                 f"{label or f'branch {i + 1}'}: a branch must state the outcome it assumes (assumed_events) "
                 f"or what changes in it"
             )}
+        if any(e.get("pity_at_outcome") is None for e in view["events"]) and view.get("pulls_remaining_stated") is None:
+            # The most common misread: "if I win the 50/50 ..., if I lose
+            # ..." with no number is a plan, decided by the simulation, not
+            # assumed outcomes. Saying so is what the retry needs to fix it.
+            return {"ok": False, "error": (
+                f"{label or f'branch {i + 1}'}: a branch assumes an outcome with no pity or pull number, so "
+                f"it cannot be a branch. A win or loss with no stated number is decided by the simulation: "
+                f"report the whole question as one plan instead (branches null), in pulling order, e.g. a "
+                f"step with on_loss 'skip' and skip_to_banner for 'if I lose, I'll switch to the weapon', "
+                f"then the steps a win continues with, then the step a loss switches to"
+            )}
         reconciled = reconcile(view, params, stats, prior=prior)
         if reconciled.get("conflict"):
             conflicts.extend(_branch_conflict(c, i, label) for c in reconciled["conflicts"])
@@ -1234,11 +1255,18 @@ def _simulate_routes(baseline_params, scenario):
             )
         elif route["ending"] == "partial":
             ending = (
-                f"A limit was hit along the way, so this route ends with {route['obtained']} (not "
-                f"everything planned), with {leftover} pulls left on average."
+                f"Not every step was won along the way (a limit was hit, or a loss moved the plan on), so "
+                f"this route ends with {route['obtained']} (not everything planned), with {leftover} pulls "
+                f"left on average."
             )
         else:
             ending = f"Every step is obtained, with {leftover} pulls left on average."
+        for banner in route["guaranteed_banners"]:
+            if banner != route["stopped_banner"]:
+                ending += (
+                    f" Losing on the {banner} banner leaves its next 5-star guaranteed to be the featured "
+                    f"one, whenever they pull there again."
+                )
         for banner, pity in route["capped_pity"]:
             cfg = baseline_params["char_pity_config" if banner == "character" else "weapon_pity_config"]
             ending += (

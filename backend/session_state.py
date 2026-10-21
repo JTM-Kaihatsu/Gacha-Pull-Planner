@@ -77,6 +77,7 @@ TOOLTIPS = {
     "route_run_start": "Average pulls going into this run, across the simulated runs that won every run before it",
     "route_win": "Share of the simulated runs reaching this run that won it",
     "route_loss": "Share of the simulated runs reaching this run that lost the 5-star here, which is where your plan stops",
+    "route_switched": "Share of the simulated runs reaching this run that lost the 5-star here and moved on, as your plan says",
     "route_ran_out": "Share of the simulated runs reaching this run that ran out of pulls before finishing it",
     "route_capped": "Share of the simulated runs reaching this run that hit its pull or pity limit without getting every copy",
     "route_obtained": "What this route ends up with, from the runs it won",
@@ -162,12 +163,25 @@ def _has_limit(step):
 
 def active_plan(extracted):
     """The extraction's plan, only when at least one step can end early: it
-    stops the plan on a loss, or it has a pull or pity limit. A plain pull
+    stops the plan on a loss, skips ahead to another step on a loss, or it
+    has a pull or pity limit. A plain pull
     ORDER with neither ("weapon first, then the character") is already what
     the baseline strategy plus the goal fields express, so it's ignored
     here and keeps today's behavior."""
     plan = extracted.get("plan") or []
-    return plan if any(step.get("on_loss") == "stop" or _has_limit(step) for step in plan) else None
+    return plan if any(step.get("on_loss") in ("stop", "skip") or _has_limit(step) for step in plan) else None
+
+
+def _skip_target(plan, index):
+    """The 0-based step a loss on plan[index] moves on to: the next later
+    step on its skip_to_banner, or simply the next step when none is named.
+    The model only names the banner, the reading it's good at; finding the
+    step is plain indexing, done here. None if there's no such step."""
+    banner = plan[index].get("skip_to_banner")
+    for later in range(index + 1, len(plan)):
+        if banner is None or plan[later].get("banner_type") == banner:
+            return later
+    return None
 
 
 def _validate_plan(plan, hard_pity):
@@ -184,8 +198,14 @@ def _validate_plan(plan, hard_pity):
         copies = step.get("copies")
         if not isinstance(copies, int) or copies < 1:
             return f"plan step {expected_order}: copies ({copies}) must be an integer >= 1"
-        if step.get("on_loss") not in ("stop", "continue"):
-            return f"plan step {expected_order}: on_loss must be 'stop' or 'continue'"
+        if step.get("on_loss") not in ("stop", "continue", "skip"):
+            return f"plan step {expected_order}: on_loss must be 'stop', 'continue', or 'skip'"
+        if step["on_loss"] == "skip" and _skip_target(plan, expected_order - 1) is None:
+            target = step.get("skip_to_banner")
+            return (
+                f"plan step {expected_order}: on_loss 'skip' must move on to a LATER step of the plan"
+                + (f", but no later step is on the {target} banner" if target else ", but this is the last step")
+            )
         max_pulls = step.get("max_pulls")
         if max_pulls is not None and (not isinstance(max_pulls, int) or max_pulls < 1):
             return f"plan step {expected_order}: max_pulls ({max_pulls}) must be an integer >= 1"
@@ -1055,8 +1075,9 @@ def _reconcile_plan(plan, lines, total_pulls, char_obtained, weapon_obtained,
             {"banner": "char" if s["banner_type"] == "character" else "weapon",
              "copies": s["copies"], "stop_on_loss": s["on_loss"] == "stop",
              "max_pulls": s.get("max_pulls"), "cap_pity": s.get("stop_at_pity"),
-             "on_cap": s.get("on_cap") if _has_limit(s) else None}
-            for s in plan
+             "on_cap": s.get("on_cap") if _has_limit(s) else None,
+             "skip_to": _skip_target(plan, index) if s["on_loss"] == "skip" else None}
+            for index, s in enumerate(plan)
         ],
         "total_pulls": total_pulls,
         "start_char_pity": start_char_pity,
@@ -1093,7 +1114,7 @@ def _pulls_pill(value, sample, tooltip_key, suffix="", color="light_green"):
 
 # Display order of a step's outcomes, so routes read best case first:
 # Route 1 wins every step.
-_OUTCOME_RANK = {"won": 0, "capped": 1, "lost": 2, "ran_out": 3}
+_OUTCOME_RANK = {"won": 0, "skipped": 0, "capped": 1, "switched": 2, "lost": 3, "ran_out": 4}
 # A runaway guard on how many routes are drawn; any further, rarer ones
 # are summarized in one line instead of each getting its own card.
 MAX_ROUTES = 6
@@ -1108,6 +1129,8 @@ def step_limit_note(phase):
     notes = []
     if phase.get("stop_on_loss"):
         notes.append("stop if lost")
+    if phase.get("skip_to") is not None:
+        notes.append(f"if lost, skip to Run {phase['skip_to'] + 1}")
     if limits:
         then = "then stop" if phase.get("on_cap") == "stop" else "then move on"
         notes.append(f"{' or '.join(limits)}, {then}")
@@ -1117,9 +1140,12 @@ def step_limit_note(phase):
 def _route_step_outcome_text(phase, outcome):
     name = route_step_name(phase)
     if outcome == "won":
-        return f"{name} {'won' if phase.get('stop_on_loss') else 'obtained'}"
+        can_lose = phase.get("stop_on_loss") or phase.get("skip_to") is not None
+        return f"{name} {'won' if can_lose else 'obtained'}"
     if outcome == "capped":
         return f"{name} capped{', stop' if phase.get('on_cap') == 'stop' else ''}"
+    if outcome == "switched":
+        return f"{name} lost, moved on"
     return f"{name} lost, stop"
 
 
@@ -1137,8 +1163,10 @@ def build_route_groups(strategy, plan_result):
     """Split a simulated conditional plan (simulation.simulate_plan) into
     routes, one per way the plan can end, as pill lines. A route is a path
     through the plan's outcome tree: each step either won, hit its limit
-    ("capped"), or lost and stopped the plan. Routes are ordered best case
-    first, so Route 1 wins every step.
+    ("capped"), lost and stopped the plan, or lost and moved on to a later
+    step ("switched", with any step it jumped past "skipped": no line, no
+    factor). Routes are ordered best case first, so Route 1 wins every
+    step.
 
     A step's rate is conditional on reaching it, so a route's chance is the
     product of the rates along it, shown as that literal multiplication.
@@ -1152,8 +1180,9 @@ def build_route_groups(strategy, plan_result):
 
     Returns (routes, omitted). routes is a list of {"label", "lines",
     "chance", "avg_leftover", "sample", "ending", "obtained",
-    "stopped_banner"} dicts ("ending" is "complete", "lost", "capped_stop",
-    or "partial", a capped step moved on, so not every copy was won);
+    "stopped_banner", "guaranteed_banners", "capped_pity"} dicts ("ending"
+    is "complete", "lost", "capped_stop", or "partial": a capped or
+    switched step moved on, so not every copy was won);
     omitted is None, or {"routes", "chance"} for routes beyond MAX_ROUTES,
     rarest first, that were left out."""
     nodes, leaves = plan_result["nodes"], plan_result["leaves"]
@@ -1170,6 +1199,7 @@ def build_route_groups(strategy, plan_result):
             "won": _pill("outcome", f"WIN {r:.2f}%", "green", "route_win"),
             "capped": _pill("outcome", f"CAPPED {r:.2f}%", "default", "route_capped"),
             "lost": _pill("outcome", f"LOSS {r:.2f}%", "red", "route_loss"),
+            "switched": _pill("outcome", f"LOSS {r:.2f}%", "red", "route_switched"),
         }[outcome]
         pills = [
             _pulls_pill(nodes[parent]["avg_leftover"], nodes[parent]["count"],
@@ -1196,6 +1226,8 @@ def build_route_groups(strategy, plan_result):
     for path in kept:
         lines, factors = [], []
         for i in range(len(path)):
+            if path[i] == "skipped":
+                continue
             line, r = run_line(path[:i + 1])
             lines.append(line)
             factors.append(r)
@@ -1233,12 +1265,23 @@ def build_route_groups(strategy, plan_result):
         result_pills.append(_pill("status", f"OBTAINED: {obtained}", "green" if ending == "complete" else "default",
                                   "route_obtained"))
         stopped_banner = _PHASE_BANNER[last_phase["banner"]] if ending == "lost" else None
-        if stopped_banner:
-            result_pills.append(_pill("flag", f"{stopped_banner.upper()} GUARANTEE: TRUE", "green", "route_guarantee"))
+        # A loss, whether it stopped the plan or moved it on, leaves that
+        # banner guaranteed, unless a later step pulled on it again.
+        guaranteed = []
+        for i, o in enumerate(path):
+            banner = strategy[i]["banner"]
+            pulled_later = any(path[j] != "skipped" and strategy[j]["banner"] == banner
+                               for j in range(i + 1, len(path)))
+            if o in ("lost", "switched") and not pulled_later and _PHASE_BANNER[banner] not in guaranteed:
+                guaranteed.append(_PHASE_BANNER[banner])
+        for banner in guaranteed:
+            result_pills.append(_pill("flag", f"{banner.upper()} GUARANTEE: TRUE", "green", "route_guarantee"))
         lines.append({"label": "Route Result", "pills": result_pills})
 
         routes.append({
-            "label": ", then ".join(_route_step_outcome_text(strategy[i], o) for i, o in enumerate(path)),
+            "guaranteed_banners": guaranteed,
+            "label": ", then ".join(_route_step_outcome_text(strategy[i], o)
+                                    for i, o in enumerate(path) if o != "skipped"),
             "lines": lines, "chance": chance,
             "avg_leftover": nodes[path]["avg_leftover"], "sample": leaves[path],
             "ending": ending, "obtained": obtained.lower(), "stopped_banner": stopped_banner,
