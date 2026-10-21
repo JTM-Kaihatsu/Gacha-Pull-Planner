@@ -19,7 +19,8 @@ from openai import OpenAI
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
 from session_state import (
-    MIN_ROUTE_SAMPLE, active_plan, build_agent_cycle_line, build_result_line, build_route_groups,
+    MIN_ROUTE_SAMPLE, active_plan, build_agent_cycle_line, build_omitted_routes_group, build_result_line,
+    build_route_groups, route_step_name, step_limit_note,
     build_spending_tier_line, reconcile, remaining_goal_text,
 )
 from simulation import run_simulation_verbose, simulate_plan
@@ -120,6 +121,10 @@ _SCENARIO_FIELDS = {
         "description": "An amount of pulls stated as an ADDITION on top of whatever remains, not a total (e.g. 'plus around 45 more from this patch', 'and I'll get another 20 next week'). Report the raw number only; do not add it to anything yourself.",
     },
     "total_pulls_restated": {"type": ["integer", "null"]},
+    "reserve_pulls": {
+        "type": ["integer", "null"],
+        "description": "Pulls the question says to keep aside and never spend, only if stated, e.g. 'I want to keep 40 pulls for the next banner' = 40. Report the raw number only; do not subtract it from anything yourself. Null otherwise.",
+    },
     "additional_character_copies_wanted": {
         "type": ["integer", "null"],
         "description": "A signed CHANGE in character copies wanted, relative to the original goal, not a new total. Positive for extra copies wanted BEYOND the original goal (e.g. 'another character copy' = 1). Negative to reduce the goal below its original count, for example the question decides to give up on further copies of that banner after a bad outcome (e.g. 'if I lose the 50/50, I'll skip the second character copy and only go for the weapon' = -1 for that scenario; giving up on the banner entirely = negative enough to cover every copy still wanted, e.g. -2 if 2 were still wanted). Do not use this for the original goal itself, only for a stated change to it.",
@@ -168,8 +173,20 @@ PLAN_STEP_SCHEMA = {
             "type": "string", "enum": ["stop", "continue"],
             "description": "'stop' if the question says to stop pulling entirely (conserve the remaining pulls) when this step's 5-star is lost, e.g. 'if I lose, I would stop there'. 'continue' otherwise, keep pulling on this banner until the copies are obtained.",
         },
+        "max_pulls": {
+            "type": ["integer", "null"],
+            "description": "A limit on pulls spent in THIS step, only if stated, e.g. 'at most 80 pulls on the character' = 80. Null otherwise.",
+        },
+        "stop_at_pity": {
+            "type": ["integer", "null"],
+            "description": "A limit stated as the banner's pity counter, only if stated, e.g. 'I'll pull up to 75 pity' = 75. Report the number as stated; never convert it to a pull count yourself. Null otherwise.",
+        },
+        "on_cap": {
+            "type": ["string", "null"], "enum": ["stop", "continue", None],
+            "description": "Only when max_pulls or stop_at_pity is set: 'continue' if, on hitting the limit without the copy, the question moves on to the next step ('then switch to the weapon'), 'stop' if it ends pulling there ('then stop'). Null when there is no limit.",
+        },
     },
-    "required": ["step_order", "banner_type", "copies", "on_loss"],
+    "required": ["step_order", "banner_type", "copies", "on_loss", "max_pulls", "stop_at_pity", "on_cap"],
     "additionalProperties": False,
 }
 
@@ -179,9 +196,10 @@ SESSION_STATE_SCHEMA = {
         "plan": {
             "type": ["array", "null"],
             "description": (
-                "ONLY when the question lays out a pulling ORDER for the future with a stop "
-                "condition on a loss, e.g. 'should I pull the weapon first, and if I win, continue "
-                "on the character banner? If I lose, I would stop there'. One step per banner in "
+                "ONLY when the question lays out a pulling ORDER for the future with a way for a step "
+                "to end early: a stop condition on a loss, e.g. 'should I pull the weapon first, and if "
+                "I win, continue on the character banner? If I lose, I would stop there', or a pull or "
+                "pity limit, e.g. 'spend at most 80 on the character, then switch to the weapon'. One step per banner in "
                 "the order the question intends to pull, each with the copies wanted in that step "
                 "and on_loss. These are intentions, never outcomes: do not also report them as "
                 "events or as additional_scenarios. Null for every other question."
@@ -333,8 +351,15 @@ EXTRACTION_SYSTEM_PROMPT = (
     "planned step is never known yet, the simulation decides it, so never report a planned "
     "step as an event; anything that already happened (e.g. 'I lost the 50/50 at 30 pity') "
     "is still an event as usual, and pulls expected to be gained (e.g. 'this patch will give "
-    "me around 120 pulls') are still additional_pulls_stated. plan is null for every question "
-    "without such a stop condition. If (and only if) the context "
+    "me around 120 pulls') are still additional_pulls_stated. A step can also end at a stated "
+    "limit instead: 'spend at most 80 pulls on the character, then switch to the weapon' is "
+    "max_pulls 80 with on_cap 'continue' on the character step; 'I'll pull up to 75 pity, then stop' "
+    "is stop_at_pity 75 with on_cap 'stop'. plan is null for every question without a stop "
+    "condition or a limit. Pulls to keep aside and never spend ('keep 40 for the next banner') are "
+    "reserve_pulls, with or without a plan. A pure budget what-if with no events, such as 'what if "
+    "I had 20 more pulls' (additional_pulls_stated 20) or 'what if I had 200 pulls' "
+    "(total_pulls_restated 200), is still reported through those fields even though "
+    "has_event_sequence is false. If (and only if) the context "
     "below includes a prior clarifying question and the user's answer to it, apply that "
     "answer to correct the specific thing it was about. For a pity clarifying question: if "
     "they confirmed a reported number was a TOTAL including existing pity, set that event's "
@@ -769,11 +794,16 @@ def _has_goal_change(extracted):
     return any(extracted.get(key) for key in _GOAL_CHANGE_FIELDS)
 
 
+_BUDGET_CHANGE_FIELDS = ("additional_pulls_stated", "total_pulls_restated", "reserve_pulls")
+
+
 def _extraction_applies(extracted):
     """Whether an extraction has anything to reconcile: events, a goal
-    change, or a conditional plan (which can stand alone, starting from
-    the form's own situation, with no events at all)."""
-    return bool(extracted.get("has_event_sequence") or _has_goal_change(extracted) or active_plan(extracted))
+    change, a conditional plan, or a budget change (each of the last three
+    can stand alone, starting from the form's own situation, with no
+    events at all)."""
+    return bool(extracted.get("has_event_sequence") or _has_goal_change(extracted) or active_plan(extracted)
+                or any(extracted.get(key) for key in _BUDGET_CHANGE_FIELDS))
 
 
 def _scenarios_from_extraction(extracted):
@@ -1123,60 +1153,126 @@ def _answer_plan_routes(client, model, question, baseline_params, scenario, anno
         "start_weapon_guarantee": scenario["start_weapon_guarantee"],
     }
     plan_result = simulate_plan(**run_params, trials=ADVISOR_TRIALS)
-    routes = build_route_groups(scenario["strategy"], plan_result)
+    routes, omitted = build_route_groups(scenario["strategy"], plan_result)
 
-    breakdown = {
-        "status": "ok",
-        "lines": scenario["lines"],
-        "groups": [{"label": r["label"], "lines": r["lines"]} for r in routes],
-    }
+    groups = [{"label": r["label"], "lines": r["lines"]} for r in routes]
+    if omitted:
+        groups.append(build_omitted_routes_group(omitted))
+    breakdown = {"status": "ok", "lines": scenario["lines"], "groups": groups}
     if annotations:
         breakdown["annotations"] = annotations
 
     route_facts = []
     for route in routes:
         runs_text = _lines_to_text(route["lines"])
-        leftover = route["avg_leftover"]
-        if route["stopped_banner"]:
+        leftover = round(route["avg_leftover"])
+        if route["ending"] == "lost":
             ending = (
-                f"The plan stops here, keeping {round(leftover)} pulls on average, and the next 5-star on "
+                f"The plan stops here, keeping {leftover} pulls on average, and the next 5-star on "
                 f"the {route['stopped_banner']} banner is now guaranteed to be the featured one (not just "
                 f"any 5-star) whenever they pull on it again."
             )
-        elif leftover is None:
-            ending = "No simulated run completed this route."
+        elif route["ending"] == "capped_stop":
+            ending = (
+                f"The plan stops at its limit, keeping {leftover} pulls on average, having obtained "
+                f"{route['obtained']}."
+            )
+        elif route["ending"] == "partial":
+            ending = (
+                f"A limit was hit along the way, so this route ends with {route['obtained']} (not "
+                f"everything planned), with {leftover} pulls left on average."
+            )
         else:
-            ending = f"Every step is obtained, with {round(leftover)} pulls left on average."
+            ending = f"Every step is obtained, with {leftover} pulls left on average."
+        for banner, pity in route["capped_pity"]:
+            cfg = baseline_params["char_pity_config" if banner == "character" else "weapon_pity_config"]
+            ending += (
+                f" Stopping at the limit keeps about {pity} pity on the {banner} banner, which carries over "
+                f"to their next pulls there. Unlike a loss, it leaves NO guarantee: the next 5-star on the "
+                f"{banner} banner is still a {'50/50' if banner == 'character' else '75/25'}."
+            )
+            # The most useful thing to say about a limit is often where it
+            # falls on the pity curve, which the model doesn't reliably
+            # work out on its own from the raw numbers, so it's stated.
+            if pity >= cfg["soft_pity_start"] - 5:
+                where = "just after" if pity >= cfg["soft_pity_start"] else "just before"
+                ending += (
+                    f" That stop falls {where} the {banner} banner's soft pity begins "
+                    f"({cfg['soft_pity_start']}), the point where each further pull's odds climb steeply "
+                    f"toward a certain 5-star by hard pity ({cfg['hard_pity']}), so these runs stop just as "
+                    f"pulling becomes most likely to pay off; worth pointing out."
+                )
         if 0 < route["sample"] < MIN_ROUTE_SAMPLE:
             ending += (
                 f" This route is rare (only {route['sample']} of {plan_result['trials']} simulated runs), "
                 f"so its leftover figure is approximate; say so if you cite it."
             )
         route_facts.append(f'"{route["label"]}": chance {route["chance"]:.2f}%. {runs_text}. {ending}')
+    if omitted:
+        route_facts.append(
+            f"{omitted['routes']} further, rarer routes are not shown individually; together they make up "
+            f"{omitted['chance']:.2f}% of simulated runs. Mention them only as a small remainder, if at all."
+        )
 
+    total = scenario["total_pulls"]
     question_numbers = sorted(set(re.findall(r"\d+", question)))
     number_guard = (
         f" Numbers mentioned in the question ({', '.join(question_numbers)}) are already fully "
-        f"incorporated into the {scenario['total_pulls']} starting pulls; never add or subtract any of "
-        f"them again."
+        f"incorporated into the {total} starting pulls; never add or subtract any of them again."
         if question_numbers else ""
     )
+    # A generic guard alone still let the model add a stated "100 more
+    # pulls" a second time (240 became 340) in live testing; spelling out
+    # the exact sum it's already part of is what holds, the same lesson as
+    # naming the question's numbers on the single-scenario path.
+    for line in scenario["lines"]:
+        if line["label"] in ("Additional Pulls Mentioned", "Pulls Kept in Reserve"):
+            pills = line["pills"]
+            what = "additional pulls the question mentions are" if pills[1]["value"] == "+" else "pulls kept in reserve are"
+            number_guard += (
+                f" The {pills[2]['value']} {what} already accounted for: {_lines_to_text([line]).split(': ', 1)[1]}. "
+                f"No simulation without them was run, so do not comment on how they change the odds."
+            )
+    number_guard += f" Every route starts from exactly {total} pulls; never describe any other starting total."
     context = (
         f"Verified starting point (already reconciled from the question, treat as fact and do not "
         f"restate it differently): {_lines_to_text(scenario['lines'])} The user describes a conditional "
         f"plan, and every way it can play out has ALREADY been simulated, each simulated run carrying "
         f"its own leftover pulls into the next step. Each route's chance is its share of all simulated "
         f"runs, and a run's rate is out of the runs that reached it, which is why a route's chance is "
-        f"the product of its run rates. Explain what each route means for the player in plain terms and "
-        f"give a plain recommendation about the plan itself (for example, whether stopping after a loss "
-        f"is worth it, given the pulls it keeps and the guarantee it leaves). Cite only the exact numbers "
-        f"below, never state a number that is not given here, and do not offer to run another "
-        f"simulation, none is available for this question.{number_guard}\n\n" + "\n\n".join(route_facts)
+        f"the product of its run rates. Explain every route below, each with its chance, in plain terms "
+        f"(do not skip any), then give a plain recommendation about the plan itself (for example, whether "
+        f"stopping after a loss or at a limit is worth it, given the pulls it keeps and the guarantee it "
+        f"leaves). Cite only the exact numbers below, never state a number that is not given here, and do "
+        f"not offer to run another simulation, none is available for this question. Do not just read the "
+        f"numbers back: say briefly what each route means for the player, then what the plan trades off. "
+        f"Banner facts you may use for that: the character banner's soft pity (where the odds start "
+        f"climbing steeply) begins at {baseline_params['char_pity_config']['soft_pity_start']} and its hard "
+        f"pity is {baseline_params['char_pity_config']['hard_pity']}; the weapon banner's soft pity begins "
+        f"at {baseline_params['weapon_pity_config']['soft_pity_start']} and its hard pity is "
+        f"{baseline_params['weapon_pity_config']['hard_pity']}. Write plain sentences, not a list.{number_guard}\n\n"
+        + "\n\n".join(route_facts)
     )
     language = reply_language or "the same language as the question"
+    # The raw wording ("I'm getting 100 more pulls") kept being re-read as
+    # pulls on top of a total that already includes them, the same failure
+    # the goal-only path hit with "C1", so the question the model answers
+    # is restated from the reconciled plan. The original is still given,
+    # but only for what the player cares about, never for its numbers.
+    plan_text = "; then ".join(
+        f"{route_step_name(phase)}{step_limit_note(phase)}" for phase in scenario["strategy"]
+    )
+    follow_up = (
+        f"My plan, in order: {plan_text}. I have exactly {total} pulls for it. How does this plan look, "
+        f"and is it a good plan? Reply in {language}."
+    )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": f"{context}\n\nFollow-up question: {question}\n\nReply in {language}."},
+        {"role": "user", "content": (
+            f"{context}\n\nThe player's original wording, only for what they care about (every number in "
+            f"it is already reflected above and must not be used): \"{question}\"\n\n"
+            f"Follow-up question: {follow_up}"
+        )},
     ]
     # No tools= param here on purpose: every figure is already computed,
     # and omitting tools entirely prevents a redundant re-run.
@@ -1462,13 +1558,23 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
             f"How likely am I to reach the goal of {reconciled['scenarios'][0]['goal_text']}, "
             f"and does getting more pulls change that? Reply in {reconciled.get('reply_language') or 'English'}."
         )
+    elif reconciled.get("applies") and reconciled.get("ok") and reconciled["scenarios"][0].get("budget_only"):
+        # Same lesson for a pure budget what-if: "20 more pulls" in the raw
+        # wording invites adding the 20 again on top of a total that
+        # already includes it, so the model sees the settled total instead.
+        scenario = reconciled["scenarios"][0]
+        follow_up = (
+            f"How likely am I to reach the goal of {scenario['goal_text']} with {scenario['total_pulls']} pulls, "
+            f"and does getting more pulls change that? Reply in {reconciled.get('reply_language') or 'English'}."
+        )
     messages = [
         {"role": "system", "content": SYSTEM_PROMPT},
         {"role": "user", "content": f"{context}\n\nFollow-up question: {follow_up}"},
     ]
 
-    if reconciled.get("applies") and reconciled.get("ok") and reconciled["scenarios"][0].get("goal_only"):
-        # A pure goal-change question is already fully answered by the
+    if reconciled.get("applies") and reconciled.get("ok") and (
+            reconciled["scenarios"][0].get("goal_only") or reconciled["scenarios"][0].get("budget_only")):
+        # A pure goal-change (or budget-change) question is already fully answered by the
         # deterministic runs above; offering the tool only invited a
         # redundant re-run under a strategy the model chose itself, which
         # then showed up as an unexplained extra result.
