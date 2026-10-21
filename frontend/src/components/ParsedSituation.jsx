@@ -74,10 +74,11 @@ function Line({ line }) {
 }
 
 // A branching question ('if I win... if I lose...') reconciles into two or
-// more independent scenarios sharing the same starting point; each gets its
-// own labeled, visually separate section rather than being interleaved into
-// one flat pill list, so the reader can tell at a glance which pills belong
-// to which branch.
+// more independent scenarios sharing the same starting point, and a
+// conditional plan ('weapon first, stop if I lose') into one route per way
+// it can play out; each gets its own labeled, visually separate section
+// rather than being interleaved into one flat pill list, so the reader can
+// tell at a glance which pills belong to which branch.
 function Group({ group }) {
   return (
     <div className="mb-4 last:mb-0 rounded-lg border border-slate-700/70 bg-slate-950/30 px-3 py-3">
@@ -227,9 +228,15 @@ export default function ParsedSituation({ breakdown, baseline, conflictAnswers, 
       {startingSituation}
       <div className="bg-slate-900/40 border border-slate-700 rounded-lg px-3 py-3 mb-3">
         <div className="text-[11px] text-slate-500 uppercase tracking-wider mb-2">Parsed Situation</div>
-        {breakdown.groups
-          ? breakdown.groups.map((group, i) => <Group key={i} group={group} />)
-          : breakdown.lines.map((line, i) => <Line key={i} line={line} />)}
+        {/* A conditional plan has both: the shared facts every route starts
+            from as plain lines, then one group per route. Mutually
+            exclusive scenarios have only groups, a plain answer only lines. */}
+        {breakdown.lines?.map((line, i) => <Line key={i} line={line} />)}
+        {breakdown.groups && (
+          <div className={breakdown.lines?.length ? 'mt-3' : ''}>
+            {breakdown.groups.map((group, i) => <Group key={i} group={group} />)}
+          </div>
+        )}
       </div>
     </>
   )

@@ -21,6 +21,16 @@ from simulation import DUPE_WIN_REFUND_BONUS
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
+# A conditional plan ("pull the weapon first; if I win, go for the
+# character; if I lose, stop") is at most this many ordered steps, a
+# runaway guard against a misread question, the same idea as advisor.py's
+# MAX_SCENARIOS.
+MAX_PLAN_STEPS = 4
+# A route reached by fewer simulated runs than this still shows its
+# chance (which is measured across every run), but its average leftover
+# figure rests on only that small subset, so it's flagged approximate.
+MIN_ROUTE_SAMPLE = 200
+
 # Refund estimation: applied only when the question doesn't state a refund
 # count for an event AND the baseline was simulated with "all 4-star
 # characters at max copies" checked, since that's the only condition under
@@ -63,6 +73,17 @@ TOOLTIPS = {
     "stated_remaining": "Pulls remaining as directly stated in your question, since not every event gave an exact pity count",
     "banner_marker": "Which banner the guarantee flag to the right belongs to",
     "existing_pity": "Pity already built up on this banner before this run",
+    "route_start": "Pulls going into every route of your plan, after everything above",
+    "route_run_start": "Average pulls going into this run, across the simulated runs that won every run before it",
+    "route_win": "Share of the simulated runs reaching this run that won it",
+    "route_loss": "Share of the simulated runs reaching this run that lost the 5-star here, which is where your plan stops",
+    "route_ran_out": "Share of the simulated runs reaching this run that ran out of pulls before finishing it",
+    "route_leftover_won": "Average pulls left after this run, across the simulated runs that won it",
+    "route_leftover_lost": "Average pulls kept after stopping here, across the simulated runs that lost this run",
+    "route_factor": "This run's rate, from the line above",
+    "multiply_op": "Multiplied: each run only happens when the run before it was won",
+    "route_chance": "Chance of this whole route, out of every simulated run",
+    "route_guarantee": "Losing that 5-star means the next 5-star on this banner is guaranteed to be the featured one, whenever you pull on it again",
 }
 
 _BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
@@ -124,6 +145,46 @@ def _validate_events(events, char_pity_config, weapon_pity_config):
         if pity is not None and refunds is not None and refunds > pity:
             return f"event_order {event['event_order']}: refund_count ({refunds}) exceeds pity_at_outcome ({pity})"
     return None
+
+
+def active_plan(extracted):
+    """The extraction's plan, only when at least one step stops the plan on
+    a loss. A plain pull ORDER with no stop condition ("weapon first, then
+    the character") is already what the baseline strategy plus the goal
+    fields express, so it's ignored here and keeps today's behavior."""
+    plan = extracted.get("plan") or []
+    return plan if any(step.get("on_loss") == "stop" for step in plan) else None
+
+
+def _validate_plan(plan):
+    if len(plan) > MAX_PLAN_STEPS:
+        return f"plan has {len(plan)} steps, more than the max of {MAX_PLAN_STEPS}"
+    for expected_order, step in enumerate(plan, start=1):
+        if step.get("step_order") != expected_order:
+            return (
+                f"plan steps must be numbered sequentially starting from 1 in pulling order; "
+                f"expected step_order {expected_order}, got {step.get('step_order')}"
+            )
+        if step.get("banner_type") not in ("character", "weapon"):
+            return f"plan step {expected_order}: banner_type must be 'character' or 'weapon'"
+        copies = step.get("copies")
+        if not isinstance(copies, int) or copies < 1:
+            return f"plan step {expected_order}: copies ({copies}) must be an integer >= 1"
+        if step.get("on_loss") not in ("stop", "continue"):
+            return f"plan step {expected_order}: on_loss must be 'stop' or 'continue'"
+    return None
+
+
+def _start_state_pills(total_pulls, char_guarantee, weapon_guarantee, tooltip_key="start_pulls"):
+    return [
+        _pill("number", total_pulls, "cyan", tooltip_key),
+        _pill("banner", "CHARACTER", "default", "banner_marker"),
+        _pill("flag", "GUARANTEE: TRUE" if char_guarantee else "GUARANTEE: FALSE",
+              "green" if char_guarantee else "red", "guarantee"),
+        _pill("banner", "WEAPON", "default", "banner_marker"),
+        _pill("flag", "GUARANTEE: TRUE" if weapon_guarantee else "GUARANTEE: FALSE",
+              "green" if weapon_guarantee else "red", "guarantee"),
+    ]
 
 
 def _run_label(banner, run_number, obtained, desired):
@@ -559,17 +620,23 @@ def reconcile(extracted, baseline_params, baseline_stats):
         return {"applies": False}
 
     events = extracted.get("events") or []
-    goal_only = not events and any(
+    # A conditional plan is the future half of the question (what to pull
+    # next, and when to stop); events stay the past half. Either may be
+    # empty, so a plan alone still reconciles from the starting situation.
+    plan = active_plan(extracted)
+    goal_only = not events and not plan and any(
         extracted.get(key) for key in (
             "additional_character_copies_wanted", "additional_weapon_copies_wanted",
             "characters_wanted_total", "weapons_wanted_total",
         )
     )
-    if not events and not goal_only:
+    if not events and not goal_only and not plan:
         return {"applies": True, "ok": False,
                 "error": "has_event_sequence was true but no events were reported"}
 
     error = _validate_events(events, baseline_params["char_pity_config"], baseline_params["weapon_pity_config"])
+    if not error and plan:
+        error = _validate_plan(plan)
     if error:
         return {"applies": True, "ok": False, "error": error}
 
@@ -693,6 +760,22 @@ def reconcile(extracted, baseline_params, baseline_stats):
             continue
         break
 
+    # A banner nobody mentioned keeps whatever the original form stated for
+    # it (nothing here contradicts that); a banner that appeared in the
+    # sequence gets its pity forced to 0 (an outcome, win or loss, always
+    # means a 5-star was just obtained) and its guarantee from the last
+    # event on it.
+    start_char_pity = 0 if char_events else baseline_params["start_char_pity"]
+    start_char_guarantee = char_guarantee if char_events else baseline_params["start_char_guarantee"]
+    start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
+    start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
+
+    if plan:
+        return _reconcile_plan(
+            plan, lines, total_pulls, char_obtained, weapon_obtained,
+            start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee,
+        )
+
     chars_remaining = max(desired_characters - char_obtained, 0)
     weapons_remaining = max(desired_weapons - weapon_obtained, 0)
 
@@ -729,16 +812,6 @@ def reconcile(extracted, baseline_params, baseline_stats):
             "lines": lines,
         }
 
-    # A banner nobody mentioned keeps whatever the original form stated for
-    # it (nothing here contradicts that); a banner that appeared in the
-    # sequence gets its pity forced to 0 (an outcome, win or loss, always
-    # means a 5-star was just obtained) and its guarantee from the last
-    # event on it.
-    start_char_pity = 0 if char_events else baseline_params["start_char_pity"]
-    start_char_guarantee = char_guarantee if char_events else baseline_params["start_char_guarantee"]
-    start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
-    start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
-
     if chars_remaining >= 1 and weapons_remaining >= 1:
         # Both banners still need a run, but they draw from the SAME shared
         # pull pool in sequence (see the strategy build below), not two
@@ -750,15 +823,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
                 f"Remaining Character (obtained {char_obtained} of {desired_characters}) "
                 f"and Weapon (obtained {weapon_obtained} of {desired_weapons}) Runs"
             ),
-            "pills": [
-                _pill("number", total_pulls, "cyan", "start_pulls"),
-                _pill("banner", "CHARACTER", "default", "banner_marker"),
-                _pill("flag", "GUARANTEE: TRUE" if start_char_guarantee else "GUARANTEE: FALSE",
-                      "green" if start_char_guarantee else "red", "guarantee"),
-                _pill("banner", "WEAPON", "default", "banner_marker"),
-                _pill("flag", "GUARANTEE: TRUE" if start_weapon_guarantee else "GUARANTEE: FALSE",
-                      "green" if start_weapon_guarantee else "red", "guarantee"),
-            ],
+            "pills": _start_state_pills(total_pulls, start_char_guarantee, start_weapon_guarantee),
         })
     elif chars_remaining >= 1:
         lines.append({
@@ -819,6 +884,195 @@ def reconcile(extracted, baseline_params, baseline_stats):
         "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
         "lines": lines,
     }
+
+
+def _reconcile_plan(plan, lines, total_pulls, char_obtained, weapon_obtained,
+                    start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee):
+    """Finish reconciling a question with a conditional plan: everything
+    before it (events, additional pulls) is already folded into `lines`
+    and the start state, so this only adds the shared starting point every
+    route branches from and the plan's own goal. The plan's steps ARE the
+    goal from here on, the user spelled out exactly what they'll pull for,
+    so the copies come from them rather than the baseline goal."""
+    plan_chars = sum(s["copies"] for s in plan if s["banner_type"] == "character")
+    plan_weapons = sum(s["copies"] for s in plan if s["banner_type"] == "weapon")
+    if char_obtained + plan_chars > MAX_CHARACTER_COPIES:
+        return {"applies": True, "ok": False, "error": (
+            f"the plan's character copies ({plan_chars}) plus those already obtained ({char_obtained}) "
+            f"exceed the max of {MAX_CHARACTER_COPIES}"
+        )}
+    if weapon_obtained + plan_weapons > MAX_WEAPON_COPIES:
+        return {"applies": True, "ok": False, "error": (
+            f"the plan's weapon copies ({plan_weapons}) plus those already obtained ({weapon_obtained}) "
+            f"exceed the max of {MAX_WEAPON_COPIES}"
+        )}
+
+    lines = list(lines)
+    goal_line = {"label": "Current Goal",
+                 "pills": [_pill("goal", remaining_goal_text(plan_chars, plan_weapons), "default", "goal")]}
+    if total_pulls <= 0:
+        lines.append(goal_line)
+        lines.append({"label": "Goal Status",
+                      "pills": [_pill("status", "NO PULLS REMAIN", "red", "status")]})
+        return {
+            "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": True,
+            "strategy": [], "total_pulls": 0,
+            "start_char_pity": 0, "start_char_guarantee": False,
+            "start_weapon_pity": 0, "start_weapon_guarantee": False,
+            "remaining_characters": plan_chars, "remaining_weapons": plan_weapons,
+            "lines": lines,
+        }
+
+    lines.append({
+        "label": "Starting Point for Every Route",
+        "pills": _start_state_pills(total_pulls, start_char_guarantee, start_weapon_guarantee, "route_start"),
+    })
+    lines.append(goal_line)
+
+    return {
+        "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": False,
+        "plan": True, "goal_only": False,
+        "goal_text": remaining_goal_text(plan_chars, plan_weapons),
+        "strategy": [
+            {"banner": "char" if s["banner_type"] == "character" else "weapon",
+             "copies": s["copies"], "stop_on_loss": s["on_loss"] == "stop"}
+            for s in plan
+        ],
+        "total_pulls": total_pulls,
+        "start_char_pity": start_char_pity,
+        "start_char_guarantee": start_char_guarantee,
+        "start_weapon_pity": start_weapon_pity,
+        "start_weapon_guarantee": start_weapon_guarantee,
+        "remaining_characters": plan_chars, "remaining_weapons": plan_weapons,
+        "lines": lines,
+    }
+
+
+_PHASE_BANNER = {"char": "character", "weapon": "weapon"}
+
+
+def _route_step_name(phase):
+    copies = phase["copies"]
+    suffix = f" ({copies} copies)" if copies > 1 else ""
+    return f"{_BANNER_LABEL[_PHASE_BANNER[phase['banner']]]}{suffix}"
+
+
+def _pulls_pill(value, sample, tooltip_key, suffix="", color="light_green"):
+    """An averaged pull count, as a whole number (pulls are whole, the
+    decimals of an average would be false precision), flagged "~" with the
+    sample size in its tooltip when too few simulated runs back it."""
+    if value is None or sample == 0:
+        return _pill("number", "N/A", "default", tooltip_key)
+    # A bare count stays an int, like every other number pill.
+    pill = _pill("number", f"{round(value)}{suffix}" if suffix else round(value), color, tooltip_key)
+    if sample < MIN_ROUTE_SAMPLE:
+        pill["value"] = f"~{pill['value']}"
+        pill["tooltip"] += f" (approximate: only {sample} simulated runs got here)"
+    return pill
+
+
+def build_route_groups(strategy, plan_result):
+    """Split a simulated conditional plan (simulation.simulate_plan) into
+    routes, each one possible way the plan plays out, as pill lines:
+
+    - Route 1 wins every step and reaches the end of the plan.
+    - Then one route per stop step: every step before it won, then that
+      step's 5-star was lost and the plan stopped, keeping the rest.
+
+    A step's rate is conditional on reaching it, so a route's chance is the
+    product of the rates along it, shown as that literal multiplication.
+    The product is taken from the displayed (rounded) rates so the visible
+    arithmetic always checks out; since each step's trials are exactly the
+    previous step's winners, it equals the route's share of all trials to
+    within that rounding. A stop route no simulated run ever took (e.g. a
+    guaranteed banner can't lose) is omitted rather than shown at 0%.
+
+    Returns a list of {"label", "lines", "chance", "avg_leftover",
+    "sample", "stopped_banner"} dicts, the last three for the advisor's
+    narration context, "lines" and "label" for the UI."""
+    phases = plan_result["phases"]
+
+    def rate(count, reached):
+        return round(count / reached * 100, 2) if reached else 0.0
+
+    def run_line(i, won):
+        phase, p = strategy[i], phases[i]
+        stop_note = ", stop if lost" if phase.get("stop_on_loss") else ""
+        start_pill = _pulls_pill(p["avg_start"], p["reached"],
+                                 "route_start" if i == 0 else "route_run_start", color="cyan")
+        count = p["won"] if won else p["lost"]
+        r = rate(count, p["reached"])
+        pills = [
+            start_pill,
+            _pill("outcome", f"{'WIN' if won else 'LOSS'} {r:.2f}%", "green" if won else "red",
+                  "route_win" if won else "route_loss"),
+        ]
+        if won and p["ran_out"]:
+            pills.append(_pill("outcome", f"RAN OUT {rate(p['ran_out'], p['reached']):.2f}%", "red", "route_ran_out"))
+        pills.append(_pulls_pill(
+            p["avg_leftover_won"] if won else p["avg_leftover_lost"], count,
+            "route_leftover_won" if won else "route_leftover_lost", " LEFT",
+        ))
+        return {"label": f"Run {i + 1}: {_route_step_name(phase)}{stop_note}", "pills": pills}, r
+
+    def result_line(label, factors, extra_pills):
+        chance = factors[0]
+        for f in factors[1:]:
+            chance = chance * f / 100
+        chance = round(chance, 2)
+        if len(factors) == 1:
+            pills = [_pill("result", f"{chance:.2f}%", "light_green", "route_chance")]
+        else:
+            pills = []
+            for j, f in enumerate(factors):
+                if j:
+                    pills.append(_pill("operator", "×", "magenta", "multiply_op"))
+                pills.append(_pill("number", f"{f:.2f}%", "cyan", "route_factor"))
+            pills += [_pill("operator", "=", "magenta", "equals_op"),
+                      _pill("result", f"{chance:.2f}%", "light_green", "route_chance")]
+        return {"label": label, "pills": pills + extra_pills}, chance
+
+    def won_steps(upto):
+        lines, factors, names = [], [], []
+        for i in range(upto):
+            line, r = run_line(i, won=True)
+            lines.append(line)
+            factors.append(r)
+            names.append(f"{_route_step_name(strategy[i])} {'won' if strategy[i].get('stop_on_loss') else 'obtained'}")
+        return lines, factors, names
+
+    routes = []
+
+    lines, factors, names = won_steps(len(strategy))
+    last = phases[-1]
+    result, chance = result_line("Route Result", factors, [
+        _pulls_pill(last["avg_leftover_won"], last["won"], "route_leftover_won", " LEFT"),
+    ])
+    routes.append({
+        "label": ", then ".join(names), "lines": lines + [result], "chance": chance,
+        "avg_leftover": last["avg_leftover_won"], "sample": last["won"], "stopped_banner": None,
+    })
+
+    for k, phase in enumerate(strategy):
+        if not phase.get("stop_on_loss") or phases[k]["lost"] == 0:
+            continue
+        lines, factors, names = won_steps(k)
+        loss_line, r = run_line(k, won=False)
+        banner = _PHASE_BANNER[phase["banner"]]
+        result, chance = result_line("Route Result", factors + [r], [
+            _pulls_pill(phases[k]["avg_leftover_lost"], phases[k]["lost"], "route_leftover_lost", " KEPT"),
+            _pill("flag", f"{banner.upper()} GUARANTEE: TRUE", "green", "route_guarantee"),
+        ])
+        routes.append({
+            "label": ", then ".join(names + [f"{_route_step_name(phase)} lost, stop"]),
+            "lines": lines + [loss_line, result], "chance": chance,
+            "avg_leftover": phases[k]["avg_leftover_lost"], "sample": phases[k]["lost"],
+            "stopped_banner": banner,
+        })
+
+    for n, route in enumerate(routes, start=1):
+        route["label"] = f"Route {n}: {route['label']}"
+    return routes
 
 
 def remaining_goal_text(remaining_characters, remaining_weapons):

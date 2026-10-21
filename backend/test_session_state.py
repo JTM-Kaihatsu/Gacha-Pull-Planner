@@ -1,5 +1,8 @@
 """Tests for session_state.py: pure functions, no mocking needed."""
-from session_state import TOOLTIPS, build_result_line, reconcile, remaining_goal_text, _estimate_refunds
+from session_state import (
+    MIN_ROUTE_SAMPLE, TOOLTIPS, build_result_line, build_route_groups, reconcile, remaining_goal_text,
+    _estimate_refunds,
+)
 
 BASELINE_PARAMS = {
     "total_pulls": 100,
@@ -878,3 +881,115 @@ class TestGoalOnlyHypotheticals:
     def test_no_events_and_no_goal_change_is_still_an_error(self):
         result = reconcile(_blank(events=[]), BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is False
+
+
+def _step(order, banner, on_loss, copies=1):
+    return {"step_order": order, "banner_type": banner, "copies": copies, "on_loss": on_loss}
+
+
+class TestConditionalPlan:
+    """'Pull the weapon first; if I win, continue to the character; if I
+    lose, stop': the past (events, added pulls) reconciles exactly as
+    before, and the plan becomes the strategy every route branches from."""
+
+    PARAMS = {**BASELINE_PARAMS, "total_pulls": 140}
+    STATS = {**BASELINE_STATS, "initial_pulls": 140}
+    PLAN = [_step(1, "weapon", "stop"), _step(2, "character", "continue")]
+
+    def test_reported_question_reconciles_events_then_the_plan(self):
+        # "I lost the 50/50 at 30 pity ... should I pull on the engine
+        # banner first and if I win, continue on the character banner? If I
+        # lose, I would stop there. I'm expecting around 120 pulls."
+        result = reconcile(_blank(
+            events=[_event(1, "character", "loss", 30, None)],
+            additional_pulls_stated=120, plan=self.PLAN,
+        ), self.PARAMS, self.STATS)
+
+        assert result["ok"] and result["plan"]
+        labels = [line["label"] for line in result["lines"]]
+        assert labels == ["Character Run 1 (obtained 0 of 1)", "Additional Pulls Mentioned",
+                          "Starting Point for Every Route", "Current Goal"]
+        assert _row(result["lines"][0]) == [140, "−", 30, "+", 3, "=", 113, "LOSS"]
+        assert _row(result["lines"][1]) == [113, "+", 120, "=", 233]
+        assert _row(result["lines"][2]) == [233, "CHARACTER", "GUARANTEE: TRUE", "WEAPON", "GUARANTEE: FALSE"]
+        assert _row(result["lines"][3]) == ["1 character and 1 weapon"]
+        assert result["total_pulls"] == 233
+        assert result["start_char_guarantee"] is True
+        assert result["strategy"] == [
+            {"banner": "weapon", "copies": 1, "stop_on_loss": True},
+            {"banner": "char", "copies": 1, "stop_on_loss": False},
+        ]
+
+    def test_a_plan_alone_starts_from_the_form_situation(self):
+        result = reconcile(_blank(plan=self.PLAN), self.PARAMS, self.STATS)
+        assert result["ok"] and result["plan"]
+        assert result["total_pulls"] == 140
+
+    def test_a_pull_order_without_any_stop_is_ignored(self):
+        plan = [_step(1, "weapon", "continue"), _step(2, "character", "continue")]
+        result = reconcile(_blank(events=[_event(1, "character", "loss", 30, 3)], plan=plan),
+                           self.PARAMS, self.STATS)
+        assert result["ok"] and not result.get("plan")
+        assert result["strategy"] == [{"banner": "char", "copies": 1}, {"banner": "weapon", "copies": 1}]
+
+    def test_out_of_order_steps_return_error(self):
+        plan = [_step(1, "weapon", "stop"), _step(3, "character", "continue")]
+        result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
+        assert not result["ok"] and "step_order" in result["error"]
+
+    def test_plan_copies_beyond_the_max_return_error(self):
+        plan = [_step(1, "weapon", "stop", copies=6)]
+        result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
+        assert not result["ok"] and "exceed the max" in result["error"]
+
+
+class TestBuildRouteGroups:
+    STRATEGY = [{"banner": "weapon", "copies": 1, "stop_on_loss": True},
+                {"banner": "char", "copies": 1, "stop_on_loss": False}]
+
+    @staticmethod
+    def _phase(reached, won, lost=0, ran_out=0, start=None, left_won=None, left_lost=None):
+        return {"reached": reached, "won": won, "lost": lost, "ran_out": ran_out,
+                "avg_start": start, "avg_leftover_won": left_won, "avg_leftover_lost": left_lost}
+
+    def _result(self, first, second):
+        return {"trials": 4000, "phases": [first, second]}
+
+    def test_win_route_multiplies_and_loss_route_keeps_pulls(self):
+        routes = build_route_groups(self.STRATEGY, self._result(
+            self._phase(4000, 3000, lost=1000, start=233, left_won=182.4, left_lost=183.1),
+            self._phase(3000, 2970, ran_out=30, start=182.4, left_won=128.6),
+        ))
+        assert [r["label"] for r in routes] == [
+            "Route 1: Weapon won, then Character obtained",
+            "Route 2: Weapon lost, stop",
+        ]
+        win, loss = routes
+        assert [_row(l) for l in win["lines"]] == [
+            [233, "WIN 75.00%", "182 LEFT"],
+            [182, "WIN 99.00%", "RAN OUT 1.00%", "129 LEFT"],
+            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT"],
+        ]
+        assert win["chance"] == 74.25 and win["stopped_banner"] is None
+        assert [_row(l) for l in loss["lines"]] == [
+            [233, "LOSS 25.00%", "183 LEFT"],
+            ["25.00%", "183 KEPT", "WEAPON GUARANTEE: TRUE"],
+        ]
+        assert loss["chance"] == 25.0 and loss["stopped_banner"] == "weapon"
+
+    def test_a_stop_route_no_run_took_is_omitted(self):
+        routes = build_route_groups(self.STRATEGY, self._result(
+            self._phase(4000, 4000, start=233, left_won=180),
+            self._phase(4000, 4000, start=180, left_won=120),
+        ))
+        assert [r["label"] for r in routes] == ["Route 1: Weapon won, then Character obtained"]
+
+    def test_a_rare_route_flags_its_leftover_as_approximate(self):
+        rare = MIN_ROUTE_SAMPLE - 1
+        routes = build_route_groups(self.STRATEGY, self._result(
+            self._phase(4000, 4000 - rare, lost=rare, start=233, left_won=180, left_lost=200),
+            self._phase(4000 - rare, 4000 - rare, start=180, left_won=120),
+        ))
+        kept = routes[1]["lines"][-1]["pills"][1]
+        assert kept["value"] == "~200 KEPT"
+        assert f"only {rare} simulated runs" in kept["tooltip"]
