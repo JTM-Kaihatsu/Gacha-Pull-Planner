@@ -19,9 +19,10 @@ from openai import OpenAI
 from analyzer import describe_goal
 from config import get_openai_api_key, get_model
 from session_state import (
-    build_agent_cycle_line, build_result_line, build_spending_tier_line, reconcile, remaining_goal_text,
+    MIN_ROUTE_SAMPLE, active_plan, build_agent_cycle_line, build_result_line, build_route_groups,
+    build_spending_tier_line, reconcile, remaining_goal_text,
 )
-from simulation import run_simulation_verbose
+from simulation import run_simulation_verbose, simulate_plan
 
 # Fewer trials than the main endpoint: the advisor may run several sims per
 # question, and it only needs directional numbers, not publication precision.
@@ -154,9 +155,39 @@ SCENARIO_SCHEMA = {
     "additionalProperties": False,
 }
 
+# One step of a conditional plan: a FUTURE pull the question intends to
+# make, in order, and what happens if its 5-star is lost. Never an outcome
+# (those are events); the simulation decides how each step turns out.
+PLAN_STEP_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "step_order": {"type": "integer", "description": "1-based position of this step in the intended pulling order."},
+        "banner_type": {"type": "string", "enum": ["character", "weapon"]},
+        "copies": {"type": "integer", "description": "Copies to pull for in this step, usually 1."},
+        "on_loss": {
+            "type": "string", "enum": ["stop", "continue"],
+            "description": "'stop' if the question says to stop pulling entirely (conserve the remaining pulls) when this step's 5-star is lost, e.g. 'if I lose, I would stop there'. 'continue' otherwise, keep pulling on this banner until the copies are obtained.",
+        },
+    },
+    "required": ["step_order", "banner_type", "copies", "on_loss"],
+    "additionalProperties": False,
+}
+
 SESSION_STATE_SCHEMA = {
     "type": "object",
     "properties": {
+        "plan": {
+            "type": ["array", "null"],
+            "description": (
+                "ONLY when the question lays out a pulling ORDER for the future with a stop "
+                "condition on a loss, e.g. 'should I pull the weapon first, and if I win, continue "
+                "on the character banner? If I lose, I would stop there'. One step per banner in "
+                "the order the question intends to pull, each with the copies wanted in that step "
+                "and on_loss. These are intentions, never outcomes: do not also report them as "
+                "events or as additional_scenarios. Null for every other question."
+            ),
+            "items": PLAN_STEP_SCHEMA,
+        },
         "has_event_sequence": {
             "type": "boolean",
             "description": (
@@ -221,7 +252,7 @@ SESSION_STATE_SCHEMA = {
     },
     "required": [
         "has_event_sequence", *_SCENARIO_FIELDS.keys(), "condition_label", "additional_scenarios",
-        "starting_situation_corrections", "reply_language",
+        "starting_situation_corrections", "reply_language", "plan",
     ],
     "additionalProperties": False,
 }
@@ -293,7 +324,17 @@ EXTRACTION_SYSTEM_PROMPT = (
     "condition_label and its own events/goal fields. Every scenario starts from the exact "
     "same starting point, the same baseline pulls, pity, and goal; a later scenario is an "
     "alternative to the earlier ones, never a continuation of them. Do not invent a branch "
-    "for a question that only actually describes one path. If (and only if) the context "
+    "for a question that only actually describes one path. A question that instead lays out "
+    "a pulling ORDER with a stop condition, for example 'should I pull on the engine/weapon "
+    "banner first and if I win, then continue on the character banner? If I lose, I would "
+    "stop there', is not two scenarios: report it as plan, one step per banner in pulling "
+    "order (weapon first with on_loss 'stop', then character with on_loss 'continue' in that "
+    "example), and leave condition_label and additional_scenarios null. The outcome of a "
+    "planned step is never known yet, the simulation decides it, so never report a planned "
+    "step as an event; anything that already happened (e.g. 'I lost the 50/50 at 30 pity') "
+    "is still an event as usual, and pulls expected to be gained (e.g. 'this patch will give "
+    "me around 120 pulls') are still additional_pulls_stated. plan is null for every question "
+    "without such a stop condition. If (and only if) the context "
     "below includes a prior clarifying question and the user's answer to it, apply that "
     "answer to correct the specific thing it was about. For a pity clarifying question: if "
     "they confirmed a reported number was a TOTAL including existing pity, set that event's "
@@ -728,6 +769,13 @@ def _has_goal_change(extracted):
     return any(extracted.get(key) for key in _GOAL_CHANGE_FIELDS)
 
 
+def _extraction_applies(extracted):
+    """Whether an extraction has anything to reconcile: events, a goal
+    change, or a conditional plan (which can stand alone, starting from
+    the form's own situation, with no events at all)."""
+    return bool(extracted.get("has_event_sequence") or _has_goal_change(extracted) or active_plan(extracted))
+
+
 def _scenarios_from_extraction(extracted):
     """Flatten one extraction result into a list of scenario dicts, each
     shaped exactly like reconcile()'s expected input (has_event_sequence
@@ -737,9 +785,17 @@ def _scenarios_from_extraction(extracted):
     as a guard against a runaway misread. Most questions produce exactly
     one scenario here, in which case nothing downstream behaves any
     differently than before this existed."""
-    primary = {"has_event_sequence": True, "condition_label": extracted.get("condition_label")}
+    primary = {"has_event_sequence": True, "condition_label": extracted.get("condition_label"),
+               "plan": extracted.get("plan")}
     for key in _SCENARIO_FIELDS:
         primary[key] = extracted.get(key)
+    if active_plan(extracted):
+        # A conditional plan already IS the branching, decided per
+        # simulated run; a model that also reported the same win/lose
+        # fork as additional_scenarios would only duplicate it, with
+        # invented outcomes instead of simulated ones.
+        primary["condition_label"] = None
+        return [primary]
     scenarios = [primary]
     for extra in (extracted.get("additional_scenarios") or [])[:MAX_SCENARIOS - 1]:
         scenarios.append({"has_event_sequence": True, **extra})
@@ -913,7 +969,7 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
     reconciliation failed instead of quietly answering from the unadjusted
     baseline as if nothing had been stated."""
     extracted = _extract_session_state(client, model, question, baseline_stats)
-    if not extracted.get("has_event_sequence") and not _has_goal_change(extracted):
+    if not _extraction_applies(extracted):
         return {"applies": False}
 
     result = _reconcile_scenario_list(extracted, baseline_params, baseline_stats)
@@ -927,7 +983,7 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
                 retry_extracted = _extract_session_state(
                     client, model, question, baseline_stats, error_feedback=feedback,
                 )
-                if retry_extracted.get("has_event_sequence"):
+                if _extraction_applies(retry_extracted):
                     retry_baseline_params = _apply_starting_situation_corrections(
                         baseline_params, retry_extracted.get("starting_situation_corrections"),
                     )
@@ -955,12 +1011,12 @@ def _reconcile_all_scenarios(client, model, question, baseline_params, baseline_
     extracted = _extract_session_state(
         client, model, question, baseline_stats, error_feedback=first_error,
     )
-    if not extracted.get("has_event_sequence"):
+    if not _extraction_applies(extracted):
         return {"applies": True, "ok": False, "error": first_error}
 
     result = _reconcile_scenario_list(extracted, baseline_params, baseline_stats)
     if result["ok"] or result.get("conflict"):
-        return {"applies": True, **result}
+        return {"applies": True, "reply_language": extracted.get("reply_language"), **result}
     return {"applies": True, "ok": False, "error": result["error"]}
 
 
@@ -1045,6 +1101,89 @@ def _answer_branching_scenarios(client, model, question, baseline_params, scenar
     return (response.choices[0].message.content or "").strip(), runs, breakdown
 
 
+def _answer_plan_routes(client, model, question, baseline_params, scenario, annotations=None, reply_language=None):
+    """Answer a question that reconciled into a conditional plan ("pull the
+    weapon first; if I win, go for the character; if I lose, stop"). The
+    plan is simulated once, run by run, so each simulated run carries its
+    own leftover pulls and pity into the next step, then split into
+    routes (see session_state.build_route_groups). Like the branching
+    path, the model gets one tool-free turn to narrate routes that are
+    already fully computed.
+
+    Returns (answer_text, runs, breakdown) where breakdown carries both the
+    shared "lines" (the facts everything starts from) and one group per
+    route."""
+    run_params = {
+        **baseline_params,
+        "strategy": scenario["strategy"],
+        "total_pulls": scenario["total_pulls"],
+        "start_char_pity": scenario["start_char_pity"],
+        "start_char_guarantee": scenario["start_char_guarantee"],
+        "start_weapon_pity": scenario["start_weapon_pity"],
+        "start_weapon_guarantee": scenario["start_weapon_guarantee"],
+    }
+    plan_result = simulate_plan(**run_params, trials=ADVISOR_TRIALS)
+    routes = build_route_groups(scenario["strategy"], plan_result)
+
+    breakdown = {
+        "status": "ok",
+        "lines": scenario["lines"],
+        "groups": [{"label": r["label"], "lines": r["lines"]} for r in routes],
+    }
+    if annotations:
+        breakdown["annotations"] = annotations
+
+    route_facts = []
+    for route in routes:
+        runs_text = _lines_to_text(route["lines"])
+        leftover = route["avg_leftover"]
+        if route["stopped_banner"]:
+            ending = (
+                f"The plan stops here, keeping {round(leftover)} pulls on average, and the next 5-star on "
+                f"the {route['stopped_banner']} banner is now guaranteed to be the featured one (not just "
+                f"any 5-star) whenever they pull on it again."
+            )
+        elif leftover is None:
+            ending = "No simulated run completed this route."
+        else:
+            ending = f"Every step is obtained, with {round(leftover)} pulls left on average."
+        if 0 < route["sample"] < MIN_ROUTE_SAMPLE:
+            ending += (
+                f" This route is rare (only {route['sample']} of {plan_result['trials']} simulated runs), "
+                f"so its leftover figure is approximate; say so if you cite it."
+            )
+        route_facts.append(f'"{route["label"]}": chance {route["chance"]:.2f}%. {runs_text}. {ending}')
+
+    question_numbers = sorted(set(re.findall(r"\d+", question)))
+    number_guard = (
+        f" Numbers mentioned in the question ({', '.join(question_numbers)}) are already fully "
+        f"incorporated into the {scenario['total_pulls']} starting pulls; never add or subtract any of "
+        f"them again."
+        if question_numbers else ""
+    )
+    context = (
+        f"Verified starting point (already reconciled from the question, treat as fact and do not "
+        f"restate it differently): {_lines_to_text(scenario['lines'])} The user describes a conditional "
+        f"plan, and every way it can play out has ALREADY been simulated, each simulated run carrying "
+        f"its own leftover pulls into the next step. Each route's chance is its share of all simulated "
+        f"runs, and a run's rate is out of the runs that reached it, which is why a route's chance is "
+        f"the product of its run rates. Explain what each route means for the player in plain terms and "
+        f"give a plain recommendation about the plan itself (for example, whether stopping after a loss "
+        f"is worth it, given the pulls it keeps and the guarantee it leaves). Cite only the exact numbers "
+        f"below, never state a number that is not given here, and do not offer to run another "
+        f"simulation, none is available for this question.{number_guard}\n\n" + "\n\n".join(route_facts)
+    )
+    language = reply_language or "the same language as the question"
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": f"{context}\n\nFollow-up question: {question}\n\nReply in {language}."},
+    ]
+    # No tools= param here on purpose: every figure is already computed,
+    # and omitting tools entirely prevents a redundant re-run.
+    response = client.chat.completions.create(model=model, messages=messages, temperature=ADVISOR_TEMPERATURE)
+    return (response.choices[0].message.content or "").strip(), [], breakdown
+
+
 def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_tool_calls=MAX_TOOL_CALLS,
                  clarifications=None):
     """Run the agentic follow-up loop.
@@ -1063,7 +1202,10 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
     {"label", "text"} per conflict answered, for the UI's labeled context
     line), {"status": "ok", "groups": [{"label": ..., "lines": [...]}, ...]}
     (the question reconciled into two or more mutually exclusive scenarios,
-    one group per branch, see _answer_branching_scenarios), {"status":
+    one group per branch, see _answer_branching_scenarios), {"status": "ok",
+    "lines": [...], "groups": [...]} (a conditional plan: the shared
+    starting point as lines, then one group per route, see
+    _answer_plan_routes), {"status":
     "conflict", "lines": [...], "conflicts": [...]} (one or more banners'
     reported pulls don't fit their actual starting pity, or the reported
     events together use more pulls than the stated starting budget, a
@@ -1104,6 +1246,11 @@ def run_advisor(baseline_params, baseline_stats, question, *, model=None, max_to
         # conflict blocks themselves ARE the answer, waiting on the user.
         breakdown = {"status": "conflict", "lines": reconciled["lines"], "conflicts": reconciled["conflicts"]}
         return "", [], breakdown
+    if reconciled.get("applies") and reconciled.get("ok") and reconciled["scenarios"][0].get("plan"):
+        return _answer_plan_routes(
+            client, model, question, baseline_params, reconciled["scenarios"][0],
+            annotations=reconciled.get("annotations"), reply_language=reconciled.get("reply_language"),
+        )
     if reconciled.get("applies") and reconciled.get("ok") and len(reconciled["scenarios"]) > 1:
         return _answer_branching_scenarios(
             client, model, question, baseline_params, reconciled["scenarios"],

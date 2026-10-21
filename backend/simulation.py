@@ -90,17 +90,29 @@ def simulate_combo_verbose(
     weapons_obtained = 0
 
     copy_detail = []  # per-copy breakdown for visualization
+    # One entry per phase: how it ended ("won" every copy, "lost" a 5-star
+    # and stopped there, "ran_out" of pulls, or "not_reached" because an
+    # earlier phase stopped the whole plan), plus the pulls going in and
+    # left over, so a conditional plan can be split into routes per trial.
+    phase_results = []
+    # A phase with stop_on_loss ends the entire plan at its first lost
+    # 50/50 (or 75/25): the player keeps whatever pulls remain rather than
+    # pulling on. Every later phase is skipped, but still padded below.
+    stopped = False
 
     # Execute each phase in order. Pity/guarantee state is shared, so pulling
     # Weapon between two char phases genuinely affects the budget for the next phase.
     for phase in strategy:
         banner = phase["banner"]
         copies_needed = phase["copies"]
+        stop_on_loss = phase.get("stop_on_loss", False)
+        reached = not stopped
+        phase_start = remaining
         copies_done = 0
         copy_pulls = 0
         copy_refunds = 0.0
 
-        while copies_done < copies_needed and remaining > 0:
+        while not stopped and copies_done < copies_needed and remaining > 0:
             if banner == "char":
                 remaining -= 1
                 used_pulls += 1
@@ -137,6 +149,7 @@ def simulate_combo_verbose(
                         copy_refunds = 0.0
                     else:
                         guarantee_char = True
+                        stopped = stop_on_loss
                     pity_char = 0
                     pity_4star_char = 0
 
@@ -178,6 +191,7 @@ def simulate_combo_verbose(
                         copy_refunds = 0.0
                     else:
                         guarantee_weapon = True
+                        stopped = stop_on_loss
                     pity_weapon = 0
                     pity_4star_weapon = 0
 
@@ -193,6 +207,16 @@ def simulate_combo_verbose(
         # per-copy columns aligned across every sampled trial regardless of
         # outcome; the first padded entry carries whatever partial pulls/
         # refunds were accumulated when the budget ran out, the rest are 0.
+        if not reached:
+            outcome = "not_reached"
+        elif copies_done >= copies_needed:
+            outcome = "won"
+        elif stopped:
+            outcome = "lost"
+        else:
+            outcome = "ran_out"
+        phase_results.append({"outcome": outcome, "start": phase_start, "leftover": remaining})
+
         while copies_done < copies_needed:
             copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
             copies_done += 1
@@ -223,6 +247,7 @@ def simulate_combo_verbose(
         "chars_obtained": chars_obtained,
         "weapons_obtained": weapons_obtained,
         "copy_detail": copy_detail,
+        "phase_results": phase_results,
     }
 
     return success, used_pulls, round(refunded_pulls, 2), round(pulls_leftover, 2), meta
@@ -493,3 +518,76 @@ def run_simulation_verbose(
     }
 
     return stats_summary
+
+
+def simulate_plan(
+    total_pulls,
+    strategy,
+    start_char_pity=0,
+    start_char_guarantee=False,
+    start_weapon_pity=0,
+    start_weapon_guarantee=False,
+    full_4star_chars=True,
+    char_pity_config=None,
+    weapon_pity_config=None,
+    trials=10000,
+):
+    """Monte Carlo for a conditional plan: an ordered strategy where any
+    phase may carry stop_on_loss, ending the whole plan at its first lost
+    50/50 (or 75/25). Every trial runs the plan end to end, so a later
+    phase always starts from that same trial's own leftover pulls and
+    pity, never from an average across trials.
+
+    Returns per-phase counts and averages for splitting trials into
+    routes: {"trials", "phases": [{"reached", "won", "lost", "ran_out",
+    "avg_start", "avg_leftover_won", "avg_leftover_lost"}, ...]}. A
+    phase's "reached" trials are exactly the previous phase's "won"
+    trials, so a route's probability is the product of each step's
+    conditional rate along it."""
+    phases = [
+        {"reached": 0, "won": 0, "lost": 0, "ran_out": 0,
+         "_start": [], "_leftover_won": [], "_leftover_lost": []}
+        for _ in strategy
+    ]
+
+    for _ in range(trials):
+        *_, meta = simulate_combo_verbose(
+            total_pulls,
+            strategy,
+            start_char_pity,
+            start_char_guarantee,
+            start_weapon_pity,
+            start_weapon_guarantee,
+            full_4star_chars=full_4star_chars,
+            char_pity_config=char_pity_config,
+            weapon_pity_config=weapon_pity_config,
+        )
+        for phase, result in zip(phases, meta["phase_results"]):
+            if result["outcome"] == "not_reached":
+                continue
+            phase["reached"] += 1
+            phase["_start"].append(result["start"])
+            if result["outcome"] == "won":
+                phase["won"] += 1
+                phase["_leftover_won"].append(result["leftover"])
+            elif result["outcome"] == "lost":
+                phase["lost"] += 1
+                phase["_leftover_lost"].append(result["leftover"])
+            else:
+                phase["ran_out"] += 1
+
+    def _avg(values):
+        return round(float(np.mean(values)), 2) if values else None
+
+    return {
+        "trials": trials,
+        "phases": [
+            {
+                "reached": p["reached"], "won": p["won"], "lost": p["lost"], "ran_out": p["ran_out"],
+                "avg_start": _avg(p["_start"]),
+                "avg_leftover_won": _avg(p["_leftover_won"]),
+                "avg_leftover_lost": _avg(p["_leftover_lost"]),
+            }
+            for p in phases
+        ],
+    }

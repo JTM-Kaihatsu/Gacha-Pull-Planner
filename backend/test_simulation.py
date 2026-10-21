@@ -8,6 +8,7 @@ from simulation import (
     banner_probability,
     simulate_combo_verbose,
     run_simulation_verbose,
+    simulate_plan,
     _build_copy_labels,
 )
 
@@ -411,3 +412,49 @@ class TestWinRateFormatting:
         )
         assert out["successes_char_win_rate"].endswith("%")
         assert out["successes_char_win_rate"] != "N/A"
+
+
+# ---------------------------------------------------------------------------
+# stop_on_loss and simulate_plan: conditional plans ("weapon first, stop if
+# I lose"), split per simulated run rather than chained through averages
+# ---------------------------------------------------------------------------
+class TestStopOnLoss:
+    PLAN = [{"banner": "weapon", "copies": 1, "stop_on_loss": True}, {"banner": "char", "copies": 1}]
+
+    def test_a_loss_stops_the_plan_and_keeps_the_rest(self):
+        # base_rate 1.0: every weapon pull is a 5-star, so the first pull
+        # decides the step, a loss leaves exactly 233 - 1 pulls kept.
+        always_hit = {"base_rate": 1.0, "soft_pity_start": 65, "hard_pity": 80}
+        losses = 0
+        for _ in range(200):
+            *_, meta = simulate_combo_verbose(233, self.PLAN, weapon_pity_config=always_hit)
+            first, second = meta["phase_results"]
+            if first["outcome"] == "lost":
+                losses += 1
+                assert first["leftover"] == 232
+                assert second["outcome"] == "not_reached"
+                assert meta["chars_obtained"] == 0
+            # Skipped phases are still padded, so the chart's per-copy
+            # columns stay aligned across every trial.
+            assert len(meta["copy_detail"]) == 2
+        assert losses > 0
+
+    def test_a_phase_without_stop_on_loss_never_reports_lost(self):
+        for _ in range(200):
+            *_, meta = simulate_combo_verbose(233, [{"banner": "weapon", "copies": 1}])
+            assert meta["phase_results"][0]["outcome"] in ("won", "ran_out")
+
+    def test_route_counts_partition_every_trial(self):
+        result = simulate_plan(233, self.PLAN, start_char_guarantee=True, trials=2000)
+        first, second = result["phases"]
+        assert first["reached"] == 2000
+        assert first["won"] + first["lost"] + first["ran_out"] == 2000
+        # Run 2 is exactly the runs that won run 1, each with its own leftover.
+        assert second["reached"] == first["won"]
+        assert second["avg_start"] == first["avg_leftover_won"]
+        assert first["lost"] > 0
+
+    def test_a_guaranteed_banner_can_never_take_the_stop_route(self):
+        result = simulate_plan(233, self.PLAN, start_weapon_guarantee=True, trials=500)
+        assert result["phases"][0]["lost"] == 0
+        assert result["phases"][0]["avg_leftover_lost"] is None

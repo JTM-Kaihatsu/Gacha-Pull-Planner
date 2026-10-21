@@ -1387,3 +1387,72 @@ class TestGoalOnlyHypotheticals:
         assert "AI Agent Simulated Result 1" in [l["label"] for l in breakdown["lines"]]
         assert answer == "Adding a copy lowers your odds."
         assert len(fake.calls) == 2   # extraction + answer, no tool loop
+
+
+class TestConditionalPlanRouting:
+    """A pulling order with a stop condition ('weapon first; if I lose, stop')
+    is simulated run by run and answered as routes, never as invented
+    win/lose scenarios and never through the free-form tool loop."""
+
+    PARAMS = {**BASELINE_PARAMS, "total_pulls": 140}
+    STATS = {**BASELINE_STATS, "initial_pulls": 140}
+    QUESTION = (
+        "I lost the 50/50 at 30 pity. Should I pull on the engine banner first and if I win, then "
+        "continue on the character banner? If I lose, I would stop there. I'm expecting around 120 pulls."
+    )
+    PLAN = [
+        {"step_order": 1, "banner_type": "weapon", "copies": 1, "on_loss": "stop"},
+        {"step_order": 2, "banner_type": "character", "copies": 1, "on_loss": "continue"},
+    ]
+
+    def _fake_plan(self, **kwargs):
+        self.plan_calls.append(kwargs)
+        return {"trials": 4000, "phases": [
+            {"reached": 4000, "won": 3000, "lost": 1000, "ran_out": 0,
+             "avg_start": kwargs["total_pulls"], "avg_leftover_won": 182.0, "avg_leftover_lost": 183.0},
+            {"reached": 3000, "won": 3000, "lost": 0, "ran_out": 0,
+             "avg_start": 182.0, "avg_leftover_won": 128.0, "avg_leftover_lost": None},
+        ]}
+
+    def _run(self, monkeypatch, extraction):
+        fake = _FakeClient([extraction, _response(_msg(content="Pull the weapon first."))])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        self.plan_calls = []
+        monkeypatch.setattr(advisor, "simulate_plan", self._fake_plan)
+        monkeypatch.setattr(advisor, "run_simulation_verbose",
+                            lambda **_: pytest.fail("a plan must not run the ordinary simulation"))
+        return fake, run_advisor(self.PARAMS, self.STATS, self.QUESTION)
+
+    def test_events_then_plan_answer_as_routes(self, monkeypatch):
+        fake, (answer, runs, breakdown) = self._run(monkeypatch, _extraction_response(
+            events=[{**_event(1, "character", "loss", 30, None), "pity_is_absolute": True}],
+            additional_pulls_stated=120, plan=self.PLAN, reply_language="English",
+            # A duplicate of the same fork as invented scenarios is ignored.
+            condition_label="If I win the weapon",
+            additional_scenarios=[{"condition_label": "If I lose the weapon", **_scenario_fields()}],
+        ))
+
+        assert answer == "Pull the weapon first."
+        assert [l["label"] for l in breakdown["lines"]][-2:] == ["Starting Point for Every Route", "Current Goal"]
+        assert [g["label"] for g in breakdown["groups"]] == [
+            "Route 1: Weapon won, then Character obtained", "Route 2: Weapon lost, stop",
+        ]
+        # The chained run started from the reconciled state: 140 - 30 + 3 + 120.
+        (call,) = self.plan_calls
+        assert call["total_pulls"] == 233 and call["start_char_guarantee"] is True
+        assert call["strategy"][0] == {"banner": "weapon", "copies": 1, "stop_on_loss": True}
+
+        # One extraction, one tool-free narration grounded in the routes.
+        assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
+        prompt = fake.calls[-1]["messages"][-1]["content"]
+        assert '"Route 1: Weapon won, then Character obtained": chance 75.00%' in prompt
+        assert "keeping 183 pulls on average" in prompt
+        assert "(120, 30, 50)" in prompt
+        assert "Reply in English." in prompt
+
+    def test_a_plan_with_no_events_still_applies(self, monkeypatch):
+        _, (_, _, breakdown) = self._run(monkeypatch, _extraction_response(
+            has_event_sequence=False, plan=self.PLAN,
+        ))
+        assert len(breakdown["groups"]) == 2
+        assert self.plan_calls[0]["total_pulls"] == 140
