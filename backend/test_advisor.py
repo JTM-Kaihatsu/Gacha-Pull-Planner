@@ -85,9 +85,8 @@ def _extraction_response(**overrides):
 
 
 def _scenario_fields(**overrides):
-    """The fields shared by the primary scenario and every additional_scenarios
-    entry (session_state.py's _SCENARIO_FIELDS), defaulted like a question
-    that states nothing beyond its events."""
+    """The top-level fields of a scenario (advisor.py's _SCENARIO_FIELDS),
+    defaulted like a question that states nothing beyond its events."""
     base = {
         "events": [], "pulls_remaining_stated": None, "additional_pulls_stated": None,
         "total_pulls_restated": None,
@@ -97,13 +96,20 @@ def _scenario_fields(**overrides):
     return base
 
 
-def _branching_extraction_response(primary_label, primary_overrides, additional_scenarios):
-    payload = {
-        "has_event_sequence": True,
-        "condition_label": primary_label,
-        "additional_scenarios": additional_scenarios,
-        **_scenario_fields(**primary_overrides),
+def _branch(label, assumed_events, **overrides):
+    branch = {
+        "condition_label": label, "assumed_events": assumed_events,
+        "pulls_remaining_stated": None, "additional_pulls_stated": None, "reserve_pulls": None,
+        "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
+        "characters_wanted_total": None, "weapons_wanted_total": None, "plan": None,
+        "stops_pulling": False,
     }
+    branch.update(overrides)
+    return branch
+
+
+def _branching_extraction_response(shared_overrides, branches):
+    payload = {"has_event_sequence": True, "branches": branches, **_scenario_fields(**shared_overrides)}
     return _response(_msg(content=json.dumps(payload)))
 
 
@@ -556,53 +562,149 @@ class TestSessionStateIntegration:
             assert call["temperature"] == advisor.ADVISOR_TEMPERATURE
 
 
+def _ps_event(order, banner, outcome, pulls_spent, refunds=None):
+    """An event reported as pulls SPENT this run ('after 60 pulls'), not an
+    absolute pity counter value. pity_is_absolute must be explicit here
+    (unlike _event, which relies on the True default) since these tests
+    are specifically about the pulls-spent branch of pity carryover."""
+    return {"event_order": order, "banner_type": banner, "outcome": outcome,
+            "pity_at_outcome": pulls_spent, "pity_is_absolute": False, "refund_count": refunds}
+
+
+def _abs_event(order, banner, outcome, pity, refunds=None):
+    return {"event_order": order, "banner_type": banner, "outcome": outcome,
+            "pity_at_outcome": pity, "pity_is_absolute": True, "refund_count": refunds}
+
+
 class TestScenariosFromExtraction:
-    """Pure unit tests for the helper that flattens one extraction result
-    (primary scenario fields plus an optional additional_scenarios array)
-    into a list of scenario dicts, each shaped like reconcile()'s input."""
+    """One extraction splits into the shared part and its branches."""
 
-    def test_no_additional_scenarios_returns_just_the_primary(self):
-        extracted = {
-            "condition_label": None, "additional_scenarios": None,
-            **_scenario_fields(events=[_event(1, "character", "win", 30, 5)]),
-        }
-        scenarios = _scenarios_from_extraction(extracted)
-        assert len(scenarios) == 1
-        assert scenarios[0]["has_event_sequence"] is True
-        assert scenarios[0]["condition_label"] is None
-        assert scenarios[0]["events"] == extracted["events"]
+    PLAN = [{"step_order": 1, "banner_type": "weapon", "copies": 1, "on_loss": "stop",
+             "max_pulls": None, "stop_at_pity": None, "on_cap": None}]
 
-    def test_additional_scenarios_are_appended_after_the_primary(self):
+    def test_no_branches_returns_the_whole_question_as_shared(self):
+        extracted = {"has_event_sequence": True, "branches": None, "plan": self.PLAN,
+                     **_scenario_fields(events=[_event(1, "character", "win", 30, 5)])}
+        shared, branches = _scenarios_from_extraction(extracted)
+        assert branches == []
+        assert shared["events"] == [_event(1, "character", "win", 30, 5)]
+        assert shared["plan"] == self.PLAN
+
+    def test_branches_keep_only_their_own_assumed_outcomes(self):
         extracted = {
-            "condition_label": "If I win",
-            "additional_scenarios": [
-                {"condition_label": "If I lose", **_scenario_fields(events=[_event(1, "character", "loss", 75, 3)])},
+            "has_event_sequence": True, "plan": self.PLAN,
+            **_scenario_fields(events=[_event(1, "weapon", "loss", 40, 2)], additional_pulls_stated=120),
+            "branches": [
+                _branch("If I win", [_event(1, "character", "win", 30, 3)]),
+                _branch("If I lose", [_event(1, "character", "loss", 75, 8)], plan=self.PLAN),
             ],
-            **_scenario_fields(events=[_event(1, "character", "win", 30, 5)]),
         }
-        scenarios = _scenarios_from_extraction(extracted)
-        assert len(scenarios) == 2
-        assert scenarios[0]["condition_label"] == "If I win"
-        assert scenarios[1]["condition_label"] == "If I lose"
-        assert scenarios[1]["has_event_sequence"] is True
-        assert scenarios[1]["events"][0]["outcome"] == "loss"
+        shared, branches = _scenarios_from_extraction(extracted)
+        # A plan only ever belongs to a branch once there are branches.
+        assert shared["plan"] is None
+        assert shared["events"] == [_event(1, "weapon", "loss", 40, 2)]
+        assert [label for label, _ in branches] == ["If I win", "If I lose"]
+        assert branches[0][1]["events"] == [_event(1, "character", "win", 30, 3)]
+        assert branches[0][1]["additional_pulls_stated"] is None
+        assert branches[1][1]["plan"] == self.PLAN
 
-    def test_scenarios_are_capped_at_max_scenarios(self):
-        extras = [
-            {"condition_label": f"Branch {i}", **_scenario_fields()}
-            for i in range(MAX_SCENARIOS + 5)
-        ]
+    def test_branches_are_capped_at_max_scenarios(self):
+        extracted = {"has_event_sequence": True, "plan": None, **_scenario_fields(),
+                     "branches": [_branch(f"Branch {i}", []) for i in range(MAX_SCENARIOS + 5)]}
+        _, branches = _scenarios_from_extraction(extracted)
+        assert len(branches) == MAX_SCENARIOS
+
+
+class TestBranchTree:
+    """Shared facts reconcile once; each branch continues from them."""
+
+    def test_shared_events_show_once_and_each_branch_continues_from_them(self):
         extracted = {
-            "condition_label": "Primary", "additional_scenarios": extras,
-            **_scenario_fields(),
+            "has_event_sequence": True, "plan": None,
+            # Already happened: lost the weapon at 40 pity, 2 refunds.
+            **_scenario_fields(events=[_event(1, "weapon", "loss", 40, 2)]),
+            "branches": [
+                _branch("If I win the character at 30", [_event(1, "character", "win", 30, 3)]),
+                _branch("If I lose the character at 60", [_event(1, "character", "loss", 60, 7)]),
+            ],
         }
-        scenarios = _scenarios_from_extraction(extracted)
-        assert len(scenarios) == MAX_SCENARIOS
+        result = advisor._reconcile_scenario_list(extracted, BASELINE_PARAMS, BASELINE_STATS)
+
+        assert result["ok"] and result["branched"]
+        assert [l["label"] for l in result["shared_lines"]] == ["Weapon Run 1 (obtained 0 of 1)"]
+        win, lose = result["scenarios"]
+        assert (win["letter"], lose["letter"]) == ("A", "B")
+        # 120 - 40 + 2 = 82 shared, then each branch from 82, never repeating it.
+        assert [p["value"] for p in win["lines"][0]["pills"]][:7] == [82, "−", 30, "+", 3, "=", 55]
+        assert [p["value"] for p in lose["lines"][0]["pills"]][:7] == [82, "−", 60, "+", 7, "=", 29]
+        assert not any(l["label"].startswith("Weapon Run 1") for l in win["lines"] + lose["lines"])
+        # The shared loss left the weapon guaranteed in both branches.
+        assert win["start_weapon_guarantee"] and lose["start_weapon_guarantee"]
+        assert lose["start_char_guarantee"] and not win["start_char_guarantee"]
+        assert win["remaining_characters"] == 0 and win["remaining_weapons"] == 1
+
+    def test_runs_and_copies_keep_counting_on_from_the_shared_part(self):
+        # Already won C0 at 30 (3 refunds); a branch assumes the C1 copy at 50.
+        stats = {**BASELINE_STATS, "desired_characters": 2}
+        extracted = {
+            "has_event_sequence": True, "plan": None,
+            **_scenario_fields(events=[_event(1, "character", "win", 30, 3)]),
+            "branches": [
+                _branch("If I win C1 at 50", [_event(1, "character", "win", 50, None)]),
+                _branch("If I lose at 50", [_event(1, "character", "loss", 50, None)]),
+            ],
+        }
+        result = advisor._reconcile_scenario_list(extracted, BASELINE_PARAMS, stats)
+        win = result["scenarios"][0]
+        assert win["lines"][0]["label"] == "Character Run 2 (obtained 2 of 2)"
+        # A repeat copy still gets its dupe refund pill on top of the estimate.
+        assert [p["value"] for p in win["lines"][0]["pills"]][:9] == [93, "−", 50, "+", 6, "+", 2, "=", 51]
+        assert win["remaining_characters"] == 0
+
+    def test_a_conflict_inside_a_branch_is_keyed_and_labeled_by_branch(self):
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        extracted = {
+            "has_event_sequence": True, "plan": None, **_scenario_fields(),
+            "branches": [
+                _branch("If I win the weapon after 60 pulls", [_ps_event(1, "weapon", "win", 60)]),
+                _branch("If I lose the weapon after 30 pulls", [_ps_event(1, "weapon", "loss", 30)]),
+            ],
+        }
+        result = advisor._reconcile_scenario_list(extracted, params, BASELINE_STATS)
+        assert result["conflict"]
+        (conflict,) = result["conflicts"]
+        assert conflict["conflict_key"] == "branch0:pity:weapon:1"
+        assert conflict["header"] == "Scenario A, For Weapon Attempt 1 of 1"
+        assert conflict["branch_label"] == "If I win the weapon after 60 pulls"
+
+    def test_a_budget_conflict_in_a_branch_names_the_shared_budget(self):
+        extracted = {
+            "has_event_sequence": True, "plan": None,
+            **_scenario_fields(events=[_event(1, "weapon", "win", 70, 0)]),
+            "branches": [_branch("If I lose the character at 80", [_event(1, "character", "loss", 80, 0)]),
+                         _branch("If I win the character at 20", [_event(1, "character", "win", 20, 0)])],
+        }
+        result = advisor._reconcile_scenario_list(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        (conflict,) = result["conflicts"]
+        assert conflict["conflict_key"] == "branch0:budget"
+        assert "the events shared by every scenario above leave only 50 pulls" in conflict["question"]
+        assert [l["label"] for l in result["lines"]] == ["Weapon Run 1 (obtained 1 of 1)"]
+
+    def test_a_conflict_in_the_shared_part_stays_unprefixed(self):
+        params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
+        extracted = {
+            "has_event_sequence": True, "plan": None,
+            **_scenario_fields(events=[_ps_event(1, "weapon", "win", 60)]),
+            "branches": [_branch("If I win", [_event(1, "character", "win", 30, 3)]),
+                         _branch("If I lose", [_event(1, "character", "loss", 30, 3)])],
+        }
+        result = advisor._reconcile_scenario_list(extracted, params, BASELINE_STATS)
+        assert [c["conflict_key"] for c in result["conflicts"]] == ["pity:weapon:1"]
 
 
 class TestBranchingScenarios:
-    """The question describes two or more mutually exclusive futures ('if I
-    win... if I lose...'), reconciled from the same starting point."""
+    """The question describes two or more mutually exclusive futures it
+    assumes ('if I win... if I lose...'), continuing from shared facts."""
 
     def _fake_sim_by_pulls(self, **kwargs):
         # Encode total_pulls into the rate so a test can tell which branch's
@@ -617,61 +719,44 @@ class TestBranchingScenarios:
         }
 
     def test_two_branches_each_simulated_and_grouped_separately(self, monkeypatch):
-        params = {**BASELINE_PARAMS, "total_pulls": 100}
-        stats = {**BASELINE_STATS, "initial_pulls": 100}
-
         fake = _FakeClient([
-            _branching_extraction_response(
-                "If I win the character pull around pity 30",
-                {"events": [_event(1, "character", "win", 30, 5)]},
-                [{
-                    "condition_label": "If I lose the character pull around pity 75",
-                    **_scenario_fields(events=[_event(1, "character", "loss", 75, 3)]),
-                }],
-            ),
+            _branching_extraction_response({}, [
+                _branch("If I win the character pull around pity 30", [_event(1, "character", "win", 30, 5)]),
+                _branch("If I lose the character pull around pity 75", [_event(1, "character", "loss", 75, 3)]),
+            ]),
             _response(_msg(content="Win branch is strong, lose branch is a stretch.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", self._fake_sim_by_pulls)
 
         answer, runs, breakdown = run_advisor(
-            params, stats,
+            BASELINE_PARAMS, BASELINE_STATS,
             "If I win the character pull around pity 30, what are my odds for the weapon? "
             "If I lose around pity 75, what are my odds instead?",
         )
 
         assert answer == "Win branch is strong, lose branch is a stretch."
         assert breakdown["status"] == "ok"
-        assert "groups" in breakdown and "lines" not in breakdown
-        labels = [g["label"] for g in breakdown["groups"]]
-        assert labels == [
-            "If I win the character pull around pity 30",
-            "If I lose the character pull around pity 75",
+        assert breakdown["lines"] == []
+        assert [g["label"] for g in breakdown["groups"]] == [
+            "Scenario A: If I win the character pull around pity 30",
+            "Scenario B: If I lose the character pull around pity 75",
         ]
 
-        # Win branch: 100 - 30 + 5 = 75 pulls remain, weapon only.
-        win_group = breakdown["groups"][0]
-        win_result = next(l for l in win_group["lines"] if l["label"] == "Simulated Result")
-        assert win_result["pills"][0]["value"] == "75 pulls → 75.00%"
+        # Win branch: 120 - 30 + 5 = 95 pulls remain, weapon only.
+        win_result = next(l for l in breakdown["groups"][0]["lines"] if l["label"] == "Simulated Result")
+        assert win_result["pills"][0]["value"] == "95 pulls → 95.00%"
+        # Lose branch: 120 - 75 + 3 = 48 pulls remain, character (guaranteed) + weapon.
+        lose_result = next(l for l in breakdown["groups"][1]["lines"] if l["label"] == "Simulated Result")
+        assert lose_result["pills"][0]["value"] == "48 pulls → 48.00%"
 
-        # Lose branch: 100 - 75 + 3 = 28 pulls remain, character (guaranteed) + weapon.
-        lose_group = breakdown["groups"][1]
-        lose_result = next(l for l in lose_group["lines"] if l["label"] == "Simulated Result")
-        assert lose_result["pills"][0]["value"] == "28 pulls → 28.00%"
-
-        # Both branches were actually simulated deterministically, not left to the model.
-        assert len(runs) == 2
-        assert {r["total_pulls"] for r in runs} == {75, 28}
-
-        # Only 2 model calls total: the extraction, then one consolidated
-        # answer. No exploratory tool loop for a branching question.
+        assert {r["total_pulls"] for r in runs} == {95, 48}
+        # The extraction, then one consolidated answer, no tool loop.
         assert len(fake.calls) == 2
         assert "tools" not in fake.calls[-1]
+        assert "has no chance of happening to cite" in fake.calls[-1]["messages"][-1]["content"]
 
     def test_branch_that_is_already_complete_is_not_simulated(self, monkeypatch):
-        params = {**BASELINE_PARAMS, "total_pulls": 100}
-        stats = {**BASELINE_STATS, "initial_pulls": 100}
-
         seen_calls = []
 
         def _spy_sim(**kwargs):
@@ -679,77 +764,79 @@ class TestBranchingScenarios:
             return self._fake_sim_by_pulls(**kwargs)
 
         fake = _FakeClient([
-            _branching_extraction_response(
-                "If I win the character",
-                {"events": [_event(1, "character", "win", 20, 0), _event(2, "weapon", "win", 30, 0)]},
-                [{
-                    "condition_label": "If I lose the character",
-                    **_scenario_fields(events=[_event(1, "character", "loss", 90, 0)]),
-                }],
-            ),
+            _branching_extraction_response({}, [
+                _branch("If I win the character",
+                        [_event(1, "character", "win", 20, 0), _event(2, "weapon", "win", 30, 0)]),
+                _branch("If I lose the character", [_event(1, "character", "loss", 90, 0)]),
+            ]),
             _response(_msg(content="First branch is already done, second is rough.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
         monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
 
-        answer, runs, breakdown = run_advisor(
-            params, stats, "If I win everything on my first tries, am I done? If I lose the character, then what?",
+        _, runs, breakdown = run_advisor(
+            BASELINE_PARAMS, BASELINE_STATS,
+            "If I win everything on my first tries, am I done? If I lose the character, then what?",
         )
 
         win_group = breakdown["groups"][0]
         status_line = next(l for l in win_group["lines"] if l["label"] == "Goal Status")
         assert status_line["pills"][0]["value"] == "GOAL COMPLETE"
-        # No "Simulated Result" line for the already-complete branch.
         assert not any(l["label"] == "Simulated Result" for l in win_group["lines"])
-
-        # Only the second (still-incomplete) branch was actually simulated:
-        # 100 - 90 + 0 refunds = 10 pulls remain for it.
-        assert seen_calls == [10]
+        # Only the still-incomplete branch ran: 120 - 90 + 0 = 30.
+        assert seen_calls == [30]
         assert len(runs) == 1
 
-    def test_scenario_failure_includes_its_label_in_the_error(self, monkeypatch):
-        # The second branch's pulls_remaining_stated conflicts with its own
-        # events; the label must be identifiable in the surfaced error so a
-        # multi-branch failure isn't ambiguous about which branch broke.
+    def test_a_branch_with_a_plan_nests_its_routes(self, monkeypatch):
+        plan = [{"step_order": 1, "banner_type": "weapon", "copies": 1, "on_loss": "stop",
+                 "max_pulls": None, "stop_at_pity": None, "on_cap": None}]
+        plan_calls = []
+
+        def _fake_plan(**kwargs):
+            plan_calls.append(kwargs)
+            node = lambda count, left: {"count": count, "avg_leftover": left}
+            return {"trials": 4000, "nodes": {(): node(4000, kwargs["total_pulls"]),
+                                              ("won",): node(3000, 40.0), ("lost",): node(1000, 42.0)},
+                    "leaves": {("won",): 3000, ("lost",): 1000}}
+
         fake = _FakeClient([
-            _branching_extraction_response(
-                "If I win",
-                {"events": [_event(1, "character", "win", 20, 0)]},
-                [{
-                    "condition_label": "If I lose",
-                    **_scenario_fields(events=[_event(1, "character", "loss", 30, 0)], pulls_remaining_stated=999),
-                }],
-            ),
-            # Retry also fails the same way.
-            _branching_extraction_response(
-                "If I win",
-                {"events": [_event(1, "character", "win", 20, 0)]},
-                [{
-                    "condition_label": "If I lose",
-                    **_scenario_fields(events=[_event(1, "character", "loss", 30, 0)], pulls_remaining_stated=999),
-                }],
-            ),
+            _branching_extraction_response({}, [
+                _branch("If I win the character at 30", [_event(1, "character", "win", 30, 3)], plan=plan),
+                _branch("If I lose the character at 75", [_event(1, "character", "loss", 75, 8)]),
+            ]),
+            _response(_msg(content="Both branches explained.")),
         ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "simulate_plan", _fake_plan)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", self._fake_sim_by_pulls)
+
+        _, _, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "branch with a plan")
+
+        win_group, lose_group = breakdown["groups"]
+        assert [g["label"] for g in win_group["groups"]] == [
+            "Route 1: Weapon won", "Route 2: Weapon lost, stop",
+        ]
+        assert plan_calls[0]["total_pulls"] == 93   # 120 - 30 + 3
+        assert "groups" not in lose_group
+        prompt = fake.calls[-1]["messages"][-1]["content"]
+        assert '"Route 1: Weapon won": chance 75.00%' in prompt
+
+    def test_scenario_failure_falls_back_to_the_parse_failure_message(self, monkeypatch):
+        # The second branch's pulls_remaining_stated conflicts with its own
+        # events, on both the first try and the retry.
+        bad = lambda: _branching_extraction_response({}, [
+            _branch("If I win", [_event(1, "character", "win", 20, 0)]),
+            _branch("If I lose", [_event(1, "character", "loss", 30, 0)], pulls_remaining_stated=999),
+        ])
+        fake = _FakeClient([bad(), bad()])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
 
         answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "confusing branching question")
 
         assert answer == PARSE_FAILURE_MESSAGE
         assert breakdown["status"] == "error"
-
-
-def _ps_event(order, banner, outcome, pulls_spent, refunds=None):
-    """An event reported as pulls SPENT this run ('after 60 pulls'), not an
-    absolute pity counter value. pity_is_absolute must be explicit here
-    (unlike _event, which relies on the True default) since these tests
-    are specifically about the pulls-spent branch of pity carryover."""
-    return {"event_order": order, "banner_type": banner, "outcome": outcome,
-            "pity_at_outcome": pulls_spent, "pity_is_absolute": False, "refund_count": refunds}
-
-
-def _abs_event(order, banner, outcome, pity, refunds=None):
-    return {"event_order": order, "banner_type": banner, "outcome": outcome,
-            "pity_at_outcome": pity, "pity_is_absolute": True, "refund_count": refunds}
+        # The retry was told which branch broke.
+        assert "If I lose:" in fake.calls[1]["messages"][-1]["content"]
 
 
 def _tier_fake_sim(guaranteed_at, **overrides):
@@ -1172,30 +1259,41 @@ class TestPityConflictClarification:
              "text": "60 total pulls were used, including existing pity."},
         ]
 
-    def test_branching_question_with_an_internal_conflict_falls_back_to_generic_decline(self, monkeypatch):
-        # The rich conflict-clarification UI is single-scenario-only; a
-        # branching question with a conflicting branch falls back to the
-        # ordinary decline path instead, exactly like any other
-        # unreconcilable branching question.
-        conflict_event = _ps_event(1, "weapon", "win", 60)
-        branching = lambda: _branching_extraction_response(
-            "If I win the weapon pull",
-            {"events": [conflict_event]},
-            [{"condition_label": "If I lose the weapon pull", **_scenario_fields(events=[])}],
-        )
-        fake = _FakeClient([branching(), branching()])
+    def test_a_branch_conflict_is_clarified_and_resolved(self, monkeypatch):
+        # Branch A's assumed weapon win "after 60 pulls" can't fit on top of
+        # the 22 pity already there; it's asked about, not declined.
+        branches = lambda event: [
+            _branch("If I win the weapon pull", [event]),
+            _branch("If I lose the weapon pull", [_ps_event(1, "weapon", "loss", 30)]),
+        ]
+        conflicted = lambda: _branching_extraction_response({}, branches(_ps_event(1, "weapon", "win", 60)))
+        fake = _FakeClient([
+            conflicted(),                       # first Ask
+            conflicted(),                       # resubmit: fresh extraction rediscovers it
+            _branching_extraction_response({}, branches(_abs_event(1, "weapon", "win", 60))),  # retry
+            _response(_msg(content="Both branches look fine.")),
+        ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _fake_sim)
 
         params = {**BASELINE_PARAMS, "start_weapon_pity": 22}
         stats = {**BASELINE_STATS, "start_weapon_pity": 22}
+        question = "If I win the weapon pull after 60 pulls, what next? If I lose after 30, what then?"
 
-        answer, runs, breakdown = run_advisor(
-            params, stats,
-            "If I win the weapon pull after 60 pulls, what next? If I lose, what then?",
+        answer, _, breakdown = run_advisor(params, stats, question)
+        assert answer == "" and breakdown["status"] == "conflict"
+        assert [c["conflict_key"] for c in breakdown["conflicts"]] == ["branch0:pity:weapon:1"]
+
+        answer, _, breakdown = run_advisor(
+            params, stats, question,
+            clarifications=[{"conflict_key": "branch0:pity:weapon:1", "answer": "60 total including pity"}],
         )
-
-        assert breakdown["status"] == "error"
-        assert answer == PARSE_FAILURE_MESSAGE
+        assert breakdown["status"] == "ok" and len(breakdown["groups"]) == 2
+        assert breakdown["annotations"] == [
+            {"label": "USER CLARIFICATION: ", "text": "60 total pulls were used, including existing pity."},
+        ]
+        retry_prompt = fake.calls[2]["messages"][-1]["content"]
+        assert 'In the branch "If I win the weapon pull"' in retry_prompt
 
 
 class TestBudgetConflictClarification:
@@ -1427,9 +1525,6 @@ class TestConditionalPlanRouting:
         fake, (answer, runs, breakdown) = self._run(monkeypatch, _extraction_response(
             events=[{**_event(1, "character", "loss", 30, None), "pity_is_absolute": True}],
             additional_pulls_stated=120, plan=self.PLAN, reply_language="English",
-            # A duplicate of the same fork as invented scenarios is ignored.
-            condition_label="If I win the weapon",
-            additional_scenarios=[{"condition_label": "If I lose the weapon", **_scenario_fields()}],
         ))
 
         assert answer == "Pull the weapon first."
@@ -1441,7 +1536,8 @@ class TestConditionalPlanRouting:
         (call,) = self.plan_calls
         assert call["total_pulls"] == 233 and call["start_char_guarantee"] is True
         assert call["strategy"][0] == {"banner": "weapon", "copies": 1, "stop_on_loss": True,
-                                       "max_pulls": None, "cap_pity": None, "on_cap": None}
+                                       "max_pulls": None, "cap_pity": None, "on_cap": None,
+                                       "skip_to": None}
 
         # One extraction, one tool-free narration grounded in the routes.
         assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
@@ -1493,3 +1589,51 @@ class TestBudgetOnlyWhatIfs:
         assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
         follow_up = fake.calls[-1]["messages"][-1]["content"].split("Follow-up question: ")[1]
         assert follow_up.startswith("How likely am I to reach the goal of 1 character and 1 weapon with 140 pulls")
+
+
+class TestStoppingBranch:
+    def test_a_branch_that_stops_ends_on_what_it_keeps(self, monkeypatch):
+        fake = _FakeClient([
+            _branching_extraction_response({}, [
+                _branch("If I win the character at 30", [_event(1, "character", "win", 30, 3)]),
+                _branch("If I lose the character at 75", [_event(1, "character", "loss", 75, 8)],
+                        stops_pulling=True, characters_wanted_total=0),
+            ]),
+            _response(_msg(content="Stopping keeps your guarantee.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        seen = []
+
+        def _spy_sim(**kwargs):
+            seen.append(kwargs["total_pulls"])
+            return _fake_sim(**kwargs)
+
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+
+        _, _, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "if I lose I'll just stop there")
+
+        stop_group = breakdown["groups"][1]
+        # The goal change reported alongside stopping is ignored, not "0 of 0".
+        assert [l["label"] for l in stop_group["lines"]] == ["Character Run 1 (obtained 0 of 1)", "Stops Here"]
+        assert [p["value"] for p in stop_group["lines"][-1]["pills"]] == [
+            "53 KEPT", "CHARACTER", "GUARANTEE: TRUE", "WEAPON", "GUARANTEE: FALSE",
+        ]
+        # Only the branch that keeps pulling was simulated: 120 - 30 + 3 = 93.
+        assert seen == [93]
+        assert "chooses to stop pulling here, keeping 53 pulls" in fake.calls[-1]["messages"][-1]["content"]
+
+
+class TestUnnumberedBranchesAreAPlan:
+    def test_an_outcome_with_no_number_is_sent_back_as_a_plan(self):
+        extracted = {
+            "has_event_sequence": True, "plan": None, **_scenario_fields(),
+            "branches": [
+                _branch("If I win the 50/50", [_event(1, "character", "win", None, None)],
+                        additional_character_copies_wanted=1),
+                _branch("If I lose the 50/50", [_event(1, "character", "loss", None, None)]),
+            ],
+        }
+        result = advisor._reconcile_scenario_list(extracted, BASELINE_PARAMS, BASELINE_STATS)
+        assert not result["ok"]
+        assert "report the whole question as one plan instead" in result["error"]
+        assert "skip_to_banner" in result["error"]

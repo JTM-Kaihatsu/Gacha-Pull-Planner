@@ -91,29 +91,35 @@ def simulate_combo_verbose(
 
     copy_detail = []  # per-copy breakdown for visualization
     # One entry per phase: how it ended ("won" every copy, "lost" a 5-star
-    # and stopped there, "capped" by its own pull or pity limit, "ran_out"
-    # of pulls, or "not_reached" because an earlier phase ended the whole
-    # plan), plus the pulls going in and left over, so a conditional plan
-    # can be split into routes per trial.
+    # and stopped there, "switched" after losing one, moving on to a later
+    # phase, "capped" by its own pull or pity limit, "ran_out" of pulls,
+    # "skipped" because a switch jumped past it, or "not_reached" because an
+    # earlier phase ended the whole plan), plus the pulls going in and left
+    # over, so a conditional plan can be split into routes per trial.
     phase_results = []
     # A phase with stop_on_loss ends the entire plan at its first lost
     # 50/50 (or 75/25): the player keeps whatever pulls remain rather than
     # pulling on. A phase with max_pulls (pulls spent in this phase) or
     # cap_pity (the banner's pity counter) ends itself at that limit
     # instead, then either ends the plan too (on_cap "stop") or moves on to
-    # the next phase (on_cap "continue"). Every phase after the plan ends is
-    # skipped, but still padded below.
+    # the next phase (on_cap "continue"). A phase with skip_to (the index of
+    # a later phase) moves on to it at its first loss instead of stopping,
+    # passing over every phase in between. Every phase not pulled is still
+    # padded below.
     stopped = False
+    skip_until = 0
 
     # Execute each phase in order. Pity/guarantee state is shared, so pulling
     # Weapon between two char phases genuinely affects the budget for the next phase.
-    for phase in strategy:
+    for index, phase in enumerate(strategy):
         banner = phase["banner"]
         copies_needed = phase["copies"]
-        stop_on_loss = phase.get("stop_on_loss", False)
+        skip_to = phase.get("skip_to")
+        stop_on_loss = phase.get("stop_on_loss", False) or skip_to is not None
         max_pulls = phase.get("max_pulls")
         cap_pity = phase.get("cap_pity")
-        reached = not stopped
+        skipped = not stopped and index < skip_until
+        reached = not stopped and not skipped
         phase_start = remaining
         phase_pulls = 0
         lost_here = False
@@ -122,7 +128,7 @@ def simulate_combo_verbose(
         copy_pulls = 0
         copy_refunds = 0.0
 
-        while not stopped and not lost_here and not capped_here and copies_done < copies_needed and remaining > 0:
+        while reached and not lost_here and not capped_here and copies_done < copies_needed and remaining > 0:
             if banner == "char":
                 remaining -= 1
                 used_pulls += 1
@@ -223,12 +229,14 @@ def simulate_combo_verbose(
         # per-copy columns aligned across every sampled trial regardless of
         # outcome; the first padded entry carries whatever partial pulls/
         # refunds were accumulated when the budget ran out, the rest are 0.
-        if not reached:
+        if skipped:
+            outcome = "skipped"
+        elif not reached:
             outcome = "not_reached"
         elif copies_done >= copies_needed:
             outcome = "won"
         elif lost_here:
-            outcome = "lost"
+            outcome = "switched" if skip_to is not None else "lost"
         elif capped_here:
             outcome = "capped"
         else:
@@ -240,6 +248,8 @@ def simulate_combo_verbose(
         # redundant "ran_out" on an already-empty budget.
         if outcome in ("lost", "ran_out") or (outcome == "capped" and phase.get("on_cap") == "stop"):
             stopped = True
+        elif outcome == "switched":
+            skip_until = skip_to
 
         while copies_done < copies_needed:
             copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
@@ -564,7 +574,9 @@ def simulate_plan(
     across trials.
 
     Each trial's outcome PATH is the tuple of its reached phases' outcomes,
-    e.g. ("won", "won") or ("capped", "won") or ("lost",). Every prefix of
+    e.g. ("won", "won") or ("capped", "won") or ("lost",), with "skipped"
+    holding the place of any phase a switch jumped past, so position i is
+    always phase i, e.g. ("switched", "skipped", "won"). Every prefix of
     every path is tallied, which is a tree: a node's children are exactly
     the trials that went on from it, so a step's conditional rate is
     count(child) / count(parent) and a route's chance is the product of

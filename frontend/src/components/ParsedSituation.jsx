@@ -79,6 +79,8 @@ function Line({ line }) {
 // it can play out; each gets its own labeled, visually separate section
 // rather than being interleaved into one flat pill list, so the reader can
 // tell at a glance which pills belong to which branch.
+// A group can nest further groups: a scenario whose own plan splits into
+// routes shows those route cards inside the scenario card, after its lines.
 function Group({ group }) {
   return (
     <div className="mb-4 last:mb-0 rounded-lg border border-slate-700/70 bg-slate-950/30 px-3 py-3">
@@ -86,6 +88,11 @@ function Group({ group }) {
       {group.lines.map((line, i) => (
         <Line key={i} line={line} />
       ))}
+      {group.groups && (
+        <div className="mt-3">
+          {group.groups.map((inner, i) => <Group key={i} group={inner} />)}
+        </div>
+      )}
     </div>
   )
 }

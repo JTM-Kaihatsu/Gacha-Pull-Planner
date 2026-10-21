@@ -494,3 +494,31 @@ class TestStepLimits:
         assert nodes[("capped",)]["count"] > 0 and nodes[("won",)]["count"] > 0
         # Both first-step outcomes go on to the weapon step.
         assert ("capped", "won") in nodes and ("won", "won") in nodes
+
+
+class TestSkipOnLoss:
+    PLAN = [{"banner": "char", "copies": 1, "skip_to": 2},
+            {"banner": "char", "copies": 1},
+            {"banner": "weapon", "copies": 1}]
+
+    def test_a_loss_jumps_past_the_steps_in_between(self):
+        always_hit = {"base_rate": 1.0, "soft_pity_start": 73, "hard_pity": 90}
+        switches = 0
+        for _ in range(200):
+            *_, meta = simulate_combo_verbose(260, self.PLAN, char_pity_config=always_hit)
+            outcomes = [r["outcome"] for r in meta["phase_results"]]
+            if outcomes[0] == "switched":
+                switches += 1
+                assert outcomes[1] == "skipped" and outcomes[2] in ("won", "ran_out")
+                # The skipped step pulls nothing: it starts and ends where run 1 left off.
+                assert meta["phase_results"][1]["start"] == meta["phase_results"][1]["leftover"] == 259
+                assert meta["chars_obtained"] == 0
+            else:
+                assert outcomes[0] == "won" and outcomes[1] != "skipped"
+            assert len(meta["copy_detail"]) == 3
+        assert switches > 0
+
+    def test_skipped_steps_keep_their_place_in_the_path(self):
+        result = simulate_plan(260, self.PLAN, trials=1000)
+        assert ("switched", "skipped") in result["nodes"]
+        assert result["nodes"][("switched", "skipped")]["count"] == result["nodes"][("switched",)]["count"]
