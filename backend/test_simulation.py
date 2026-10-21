@@ -446,15 +446,51 @@ class TestStopOnLoss:
 
     def test_route_counts_partition_every_trial(self):
         result = simulate_plan(233, self.PLAN, start_char_guarantee=True, trials=2000)
-        first, second = result["phases"]
-        assert first["reached"] == 2000
-        assert first["won"] + first["lost"] + first["ran_out"] == 2000
-        # Run 2 is exactly the runs that won run 1, each with its own leftover.
-        assert second["reached"] == first["won"]
-        assert second["avg_start"] == first["avg_leftover_won"]
-        assert first["lost"] > 0
+        nodes, leaves = result["nodes"], result["leaves"]
+        assert nodes[()]["count"] == 2000 and nodes[()]["avg_leftover"] == 233
+        # Every trial ends on exactly one leaf, and each node's children
+        # are exactly the trials that went on from it.
+        assert sum(leaves.values()) == 2000
+        assert sum(n["count"] for p, n in nodes.items() if len(p) == 1) == 2000
+        assert nodes[("won", "won")]["count"] + nodes.get(("won", "ran_out"), {"count": 0})["count"] \
+            == nodes[("won",)]["count"]
+        assert leaves[("lost",)] == nodes[("lost",)]["count"] > 0
 
     def test_a_guaranteed_banner_can_never_take_the_stop_route(self):
         result = simulate_plan(233, self.PLAN, start_weapon_guarantee=True, trials=500)
-        assert result["phases"][0]["lost"] == 0
-        assert result["phases"][0]["avg_leftover_lost"] is None
+        assert ("lost",) not in result["nodes"]
+
+
+class TestStepLimits:
+    def test_max_pulls_caps_the_step_then_moves_on(self):
+        plan = [{"banner": "char", "copies": 1, "max_pulls": 10, "on_cap": "continue"},
+                {"banner": "weapon", "copies": 1}]
+        never_hit = {"base_rate": 0.0, "soft_pity_start": 200, "hard_pity": 300}
+        *_, meta = simulate_combo_verbose(233, plan, char_pity_config=never_hit, simulate_4star=False)
+        first, second = meta["phase_results"]
+        assert first == {"outcome": "capped", "start": 233, "leftover": 223, "pity": 10}
+        assert second["outcome"] in ("won", "ran_out") and second["start"] == 223
+
+    def test_on_cap_stop_ends_the_plan(self):
+        plan = [{"banner": "char", "copies": 1, "max_pulls": 10, "on_cap": "stop"},
+                {"banner": "weapon", "copies": 1}]
+        never_hit = {"base_rate": 0.0, "soft_pity_start": 200, "hard_pity": 300}
+        *_, meta = simulate_combo_verbose(233, plan, char_pity_config=never_hit, simulate_4star=False)
+        assert [r["outcome"] for r in meta["phase_results"]] == ["capped", "not_reached"]
+
+    def test_cap_pity_is_the_banner_counter_not_pulls_this_step(self):
+        # Starting at 70 pity, "up to 75 pity" leaves exactly 5 pulls.
+        plan = [{"banner": "char", "copies": 1, "cap_pity": 75, "on_cap": "stop"}]
+        never_hit = {"base_rate": 0.0, "soft_pity_start": 200, "hard_pity": 300}
+        *_, meta = simulate_combo_verbose(100, plan, start_char_pity=70, char_pity_config=never_hit,
+                                          simulate_4star=False)
+        assert meta["phase_results"][0] == {"outcome": "capped", "start": 100, "leftover": 95, "pity": 75}
+
+    def test_capped_paths_feed_the_next_step(self):
+        plan = [{"banner": "char", "copies": 1, "max_pulls": 80, "on_cap": "continue"},
+                {"banner": "weapon", "copies": 1}]
+        result = simulate_plan(233, plan, trials=1000)
+        nodes = result["nodes"]
+        assert nodes[("capped",)]["count"] > 0 and nodes[("won",)]["count"] > 0
+        # Both first-step outcomes go on to the weapon step.
+        assert ("capped", "won") in nodes and ("won", "won") in nodes

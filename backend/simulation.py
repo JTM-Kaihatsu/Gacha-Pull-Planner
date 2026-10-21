@@ -91,13 +91,18 @@ def simulate_combo_verbose(
 
     copy_detail = []  # per-copy breakdown for visualization
     # One entry per phase: how it ended ("won" every copy, "lost" a 5-star
-    # and stopped there, "ran_out" of pulls, or "not_reached" because an
-    # earlier phase stopped the whole plan), plus the pulls going in and
-    # left over, so a conditional plan can be split into routes per trial.
+    # and stopped there, "capped" by its own pull or pity limit, "ran_out"
+    # of pulls, or "not_reached" because an earlier phase ended the whole
+    # plan), plus the pulls going in and left over, so a conditional plan
+    # can be split into routes per trial.
     phase_results = []
     # A phase with stop_on_loss ends the entire plan at its first lost
     # 50/50 (or 75/25): the player keeps whatever pulls remain rather than
-    # pulling on. Every later phase is skipped, but still padded below.
+    # pulling on. A phase with max_pulls (pulls spent in this phase) or
+    # cap_pity (the banner's pity counter) ends itself at that limit
+    # instead, then either ends the plan too (on_cap "stop") or moves on to
+    # the next phase (on_cap "continue"). Every phase after the plan ends is
+    # skipped, but still padded below.
     stopped = False
 
     # Execute each phase in order. Pity/guarantee state is shared, so pulling
@@ -106,13 +111,18 @@ def simulate_combo_verbose(
         banner = phase["banner"]
         copies_needed = phase["copies"]
         stop_on_loss = phase.get("stop_on_loss", False)
+        max_pulls = phase.get("max_pulls")
+        cap_pity = phase.get("cap_pity")
         reached = not stopped
         phase_start = remaining
+        phase_pulls = 0
+        lost_here = False
+        capped_here = False
         copies_done = 0
         copy_pulls = 0
         copy_refunds = 0.0
 
-        while not stopped and copies_done < copies_needed and remaining > 0:
+        while not stopped and not lost_here and not capped_here and copies_done < copies_needed and remaining > 0:
             if banner == "char":
                 remaining -= 1
                 used_pulls += 1
@@ -149,7 +159,7 @@ def simulate_combo_verbose(
                         copy_refunds = 0.0
                     else:
                         guarantee_char = True
-                        stopped = stop_on_loss
+                        lost_here = stop_on_loss
                     pity_char = 0
                     pity_4star_char = 0
 
@@ -191,7 +201,7 @@ def simulate_combo_verbose(
                         copy_refunds = 0.0
                     else:
                         guarantee_weapon = True
-                        stopped = stop_on_loss
+                        lost_here = stop_on_loss
                     pity_weapon = 0
                     pity_4star_weapon = 0
 
@@ -200,6 +210,12 @@ def simulate_combo_verbose(
                     remaining += 0.4
                     refunded_pulls += 0.4
                     copy_refunds += 0.4
+
+            phase_pulls += 1
+            if copies_done < copies_needed and not lost_here:
+                pity_now = pity_char if banner == "char" else pity_weapon
+                if (max_pulls and phase_pulls >= max_pulls) or (cap_pity and pity_now >= cap_pity):
+                    capped_here = True
 
         # Pad so every trial reports exactly `copies_needed` per-copy entries
         # for this phase, in order, even when a run fails partway through a
@@ -211,11 +227,19 @@ def simulate_combo_verbose(
             outcome = "not_reached"
         elif copies_done >= copies_needed:
             outcome = "won"
-        elif stopped:
+        elif lost_here:
             outcome = "lost"
+        elif capped_here:
+            outcome = "capped"
         else:
             outcome = "ran_out"
-        phase_results.append({"outcome": outcome, "start": phase_start, "leftover": remaining})
+        phase_results.append({"outcome": outcome, "start": phase_start, "leftover": remaining,
+                              "pity": pity_char if banner == "char" else pity_weapon})
+        # Running out ends the plan as surely as stopping does; marking it
+        # keeps every later phase "not_reached" rather than a second,
+        # redundant "ran_out" on an already-empty budget.
+        if outcome in ("lost", "ran_out") or (outcome == "capped" and phase.get("on_cap") == "stop"):
+            stopped = True
 
         while copies_done < copies_needed:
             copy_detail.append({"banner": banner, "pulls_used": copy_pulls, "refunds": round(copy_refunds, 2)})
@@ -533,22 +557,29 @@ def simulate_plan(
     trials=10000,
 ):
     """Monte Carlo for a conditional plan: an ordered strategy where any
-    phase may carry stop_on_loss, ending the whole plan at its first lost
-    50/50 (or 75/25). Every trial runs the plan end to end, so a later
-    phase always starts from that same trial's own leftover pulls and
-    pity, never from an average across trials.
+    phase may stop the plan on a loss (stop_on_loss) or end itself at a
+    limit (max_pulls / cap_pity, then on_cap "stop" or "continue"). Every
+    trial runs the plan end to end, so a later phase always starts from
+    that same trial's own leftover pulls and pity, never from an average
+    across trials.
 
-    Returns per-phase counts and averages for splitting trials into
-    routes: {"trials", "phases": [{"reached", "won", "lost", "ran_out",
-    "avg_start", "avg_leftover_won", "avg_leftover_lost"}, ...]}. A
-    phase's "reached" trials are exactly the previous phase's "won"
-    trials, so a route's probability is the product of each step's
-    conditional rate along it."""
-    phases = [
-        {"reached": 0, "won": 0, "lost": 0, "ran_out": 0,
-         "_start": [], "_leftover_won": [], "_leftover_lost": []}
-        for _ in strategy
-    ]
+    Each trial's outcome PATH is the tuple of its reached phases' outcomes,
+    e.g. ("won", "won") or ("capped", "won") or ("lost",). Every prefix of
+    every path is tallied, which is a tree: a node's children are exactly
+    the trials that went on from it, so a step's conditional rate is
+    count(child) / count(parent) and a route's chance is the product of
+    those rates along it.
+
+    Returns {"trials", "nodes": {path_tuple: {"count", "avg_leftover",
+    "avg_pity"}}, "leaves": {path_tuple: count}}, where avg_leftover is the
+    average pulls left after that path's last phase (the root () is the
+    starting budget), avg_pity the average pity left on that phase's banner
+    (it carries over to the next pulls there, which matters most for a
+    capped step), and leaves counts the trials whose whole plan ended
+    exactly there."""
+    leftovers = {(): []}
+    pities = {(): [0]}
+    leaves = {}
 
     for _ in range(trials):
         *_, meta = simulate_combo_verbose(
@@ -562,32 +593,22 @@ def simulate_plan(
             char_pity_config=char_pity_config,
             weapon_pity_config=weapon_pity_config,
         )
-        for phase, result in zip(phases, meta["phase_results"]):
+        leftovers[()].append(total_pulls)
+        path = ()
+        for result in meta["phase_results"]:
             if result["outcome"] == "not_reached":
-                continue
-            phase["reached"] += 1
-            phase["_start"].append(result["start"])
-            if result["outcome"] == "won":
-                phase["won"] += 1
-                phase["_leftover_won"].append(result["leftover"])
-            elif result["outcome"] == "lost":
-                phase["lost"] += 1
-                phase["_leftover_lost"].append(result["leftover"])
-            else:
-                phase["ran_out"] += 1
-
-    def _avg(values):
-        return round(float(np.mean(values)), 2) if values else None
+                break
+            path = path + (result["outcome"],)
+            leftovers.setdefault(path, []).append(result["leftover"])
+            pities.setdefault(path, []).append(result["pity"])
+        leaves[path] = leaves.get(path, 0) + 1
 
     return {
         "trials": trials,
-        "phases": [
-            {
-                "reached": p["reached"], "won": p["won"], "lost": p["lost"], "ran_out": p["ran_out"],
-                "avg_start": _avg(p["_start"]),
-                "avg_leftover_won": _avg(p["_leftover_won"]),
-                "avg_leftover_lost": _avg(p["_leftover_lost"]),
-            }
-            for p in phases
-        ],
+        "nodes": {
+            path: {"count": len(values), "avg_leftover": round(float(np.mean(values)), 2),
+                   "avg_pity": round(float(np.mean(pities[path])), 2)}
+            for path, values in leftovers.items()
+        },
+        "leaves": leaves,
     }

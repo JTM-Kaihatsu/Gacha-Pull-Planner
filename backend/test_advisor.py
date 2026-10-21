@@ -1407,12 +1407,12 @@ class TestConditionalPlanRouting:
 
     def _fake_plan(self, **kwargs):
         self.plan_calls.append(kwargs)
-        return {"trials": 4000, "phases": [
-            {"reached": 4000, "won": 3000, "lost": 1000, "ran_out": 0,
-             "avg_start": kwargs["total_pulls"], "avg_leftover_won": 182.0, "avg_leftover_lost": 183.0},
-            {"reached": 3000, "won": 3000, "lost": 0, "ran_out": 0,
-             "avg_start": 182.0, "avg_leftover_won": 128.0, "avg_leftover_lost": None},
-        ]}
+        node = lambda count, left: {"count": count, "avg_leftover": left}
+        return {"trials": 4000, "nodes": {
+            (): node(4000, kwargs["total_pulls"]),
+            ("won",): node(3000, 182.0), ("lost",): node(1000, 183.0),
+            ("won", "won"): node(3000, 128.0),
+        }, "leaves": {("won", "won"): 3000, ("lost",): 1000}}
 
     def _run(self, monkeypatch, extraction):
         fake = _FakeClient([extraction, _response(_msg(content="Pull the weapon first."))])
@@ -1440,7 +1440,8 @@ class TestConditionalPlanRouting:
         # The chained run started from the reconciled state: 140 - 30 + 3 + 120.
         (call,) = self.plan_calls
         assert call["total_pulls"] == 233 and call["start_char_guarantee"] is True
-        assert call["strategy"][0] == {"banner": "weapon", "copies": 1, "stop_on_loss": True}
+        assert call["strategy"][0] == {"banner": "weapon", "copies": 1, "stop_on_loss": True,
+                                       "max_pulls": None, "cap_pity": None, "on_cap": None}
 
         # One extraction, one tool-free narration grounded in the routes.
         assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
@@ -1448,7 +1449,11 @@ class TestConditionalPlanRouting:
         assert '"Route 1: Weapon won, then Character obtained": chance 75.00%' in prompt
         assert "keeping 183 pulls on average" in prompt
         assert "(120, 30, 50)" in prompt
-        assert "Reply in English." in prompt
+        # The model answers a question restated from the reconciled plan.
+        assert prompt.endswith(
+            "Follow-up question: My plan, in order: Weapon, stop if lost; then Character. I have exactly "
+            "233 pulls for it. How does this plan look, and is it a good plan? Reply in English."
+        )
 
     def test_a_plan_with_no_events_still_applies(self, monkeypatch):
         _, (_, _, breakdown) = self._run(monkeypatch, _extraction_response(
@@ -1456,3 +1461,35 @@ class TestConditionalPlanRouting:
         ))
         assert len(breakdown["groups"]) == 2
         assert self.plan_calls[0]["total_pulls"] == 140
+
+
+class TestBudgetOnlyWhatIfs:
+    """'What if I had 20 more pulls': no events, but still a deterministic,
+    displayed total, answered without the free-form tool loop."""
+
+    def test_more_pulls_is_reconciled_shown_and_restated(self, monkeypatch):
+        seen = []
+
+        def _spy_sim(**kwargs):
+            seen.append(kwargs["total_pulls"])
+            return _fake_sim(**kwargs)
+
+        fake = _FakeClient([
+            _extraction_response(has_event_sequence=False, additional_pulls_stated=20, reply_language="English"),
+            _response(_msg(content="At 140 pulls you're at 80%.")),
+        ])
+        monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
+        monkeypatch.setattr(advisor, "run_simulation_verbose", _spy_sim)
+        monkeypatch.setattr(advisor, "_spending_tiers",
+                            lambda scenario, run_params, *_: ([{"key": "f2p", "total_pulls": run_params["total_pulls"]}], [], []))
+
+        answer, runs, breakdown = run_advisor(BASELINE_PARAMS, BASELINE_STATS, "what if I had 20 more pulls?")
+
+        assert answer == "At 140 pulls you're at 80%."
+        assert seen == [140]
+        line = _find_line(breakdown, "Additional Pulls Mentioned")
+        assert [p["value"] for p in line["pills"]] == [120, "+", 20, "=", 140]
+        # No tool loop, and the model sees the settled total, not "20 more".
+        assert len(fake.calls) == 2 and "tools" not in fake.calls[-1]
+        follow_up = fake.calls[-1]["messages"][-1]["content"].split("Follow-up question: ")[1]
+        assert follow_up.startswith("How likely am I to reach the goal of 1 character and 1 weapon with 140 pulls")

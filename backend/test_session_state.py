@@ -883,8 +883,9 @@ class TestGoalOnlyHypotheticals:
         assert result["ok"] is False
 
 
-def _step(order, banner, on_loss, copies=1):
-    return {"step_order": order, "banner_type": banner, "copies": copies, "on_loss": on_loss}
+def _step(order, banner, on_loss, copies=1, max_pulls=None, stop_at_pity=None, on_cap=None):
+    return {"step_order": order, "banner_type": banner, "copies": copies, "on_loss": on_loss,
+            "max_pulls": max_pulls, "stop_at_pity": stop_at_pity, "on_cap": on_cap}
 
 
 class TestConditionalPlan:
@@ -916,8 +917,10 @@ class TestConditionalPlan:
         assert result["total_pulls"] == 233
         assert result["start_char_guarantee"] is True
         assert result["strategy"] == [
-            {"banner": "weapon", "copies": 1, "stop_on_loss": True},
-            {"banner": "char", "copies": 1, "stop_on_loss": False},
+            {"banner": "weapon", "copies": 1, "stop_on_loss": True, "max_pulls": None, "cap_pity": None,
+             "on_cap": None},
+            {"banner": "char", "copies": 1, "stop_on_loss": False, "max_pulls": None, "cap_pity": None,
+             "on_cap": None},
         ]
 
     def test_a_plan_alone_starts_from_the_form_situation(self):
@@ -943,23 +946,89 @@ class TestConditionalPlan:
         assert not result["ok"] and "exceed the max" in result["error"]
 
 
+class TestPlanLimits:
+    PARAMS = {**BASELINE_PARAMS, "total_pulls": 233}
+    STATS = {**BASELINE_STATS, "initial_pulls": 233}
+
+    def test_a_capped_step_alone_makes_a_plan(self):
+        # "Spend at most 80 on the character, then switch to the weapon."
+        plan = [_step(1, "character", "continue", max_pulls=80, on_cap="continue"),
+                _step(2, "weapon", "continue")]
+        result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
+        assert result["ok"] and result["plan"]
+        assert result["strategy"][0] == {"banner": "char", "copies": 1, "stop_on_loss": False,
+                                         "max_pulls": 80, "cap_pity": None, "on_cap": "continue"}
+
+    def test_a_limit_without_on_cap_returns_error(self):
+        plan = [_step(1, "character", "continue", max_pulls=80)]
+        result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
+        assert not result["ok"] and "on_cap" in result["error"]
+
+    def test_stop_at_pity_beyond_hard_pity_returns_error(self):
+        plan = [_step(1, "character", "continue", stop_at_pity=95, on_cap="stop")]
+        result = reconcile(_blank(plan=plan), self.PARAMS, self.STATS)
+        assert not result["ok"] and "out of range 1-90" in result["error"]
+
+    def test_stop_at_pity_must_be_above_the_banner_starting_pity(self):
+        params = {**self.PARAMS, "start_char_pity": 76}
+        plan = [_step(1, "character", "continue", stop_at_pity=75, on_cap="stop")]
+        result = reconcile(_blank(plan=plan), params, self.STATS)
+        assert not result["ok"] and "must be above the 76 pity" in result["error"]
+
+    def test_stop_at_pity_passes_through_as_the_banner_counter(self):
+        params = {**self.PARAMS, "start_char_pity": 20}
+        plan = [_step(1, "character", "continue", stop_at_pity=75, on_cap="stop")]
+        result = reconcile(_blank(plan=plan), params, self.STATS)
+        assert result["strategy"][0]["cap_pity"] == 75
+        assert result["start_char_pity"] == 20
+
+
+class TestBudgetWhatIfs:
+    def test_more_pulls_alone_reconciles_to_a_shown_total(self):
+        result = reconcile(_blank(additional_pulls_stated=20), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] and result["budget_only"] and not result["goal_only"]
+        assert _row(result["lines"][0]) == [100, "+", 20, "=", 120]
+        assert result["total_pulls"] == 120
+
+    def test_a_restated_total_alone_gets_its_own_line(self):
+        result = reconcile(_blank(total_pulls_restated=200), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["budget_only"]
+        assert result["lines"][0]["label"] == "Total Pulls Stated" and _row(result["lines"][0]) == [200]
+        assert result["total_pulls"] == 200
+
+    def test_a_reserve_is_set_aside_after_everything_else(self):
+        result = reconcile(_blank(events=[_event(1, "character", "win", 30, 3)],
+                                  additional_pulls_stated=20, reserve_pulls=40),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        assert not result["budget_only"]
+        reserve_line = next(l for l in result["lines"] if l["label"] == "Pulls Kept in Reserve")
+        assert _row(reserve_line) == [93, "−", 40, "=", 53]
+        assert result["total_pulls"] == 53
+        assert reserve_line["pills"][-1]["tooltip"] == TOOLTIPS["final_result"]
+
+    def test_a_reserve_covering_everything_leaves_no_pulls(self):
+        result = reconcile(_blank(reserve_pulls=150), BASELINE_PARAMS, BASELINE_STATS)
+        assert result["ok"] and result["pulls_exhausted"]
+
+
 class TestBuildRouteGroups:
     STRATEGY = [{"banner": "weapon", "copies": 1, "stop_on_loss": True},
                 {"banner": "char", "copies": 1, "stop_on_loss": False}]
 
     @staticmethod
-    def _phase(reached, won, lost=0, ran_out=0, start=None, left_won=None, left_lost=None):
-        return {"reached": reached, "won": won, "lost": lost, "ran_out": ran_out,
-                "avg_start": start, "avg_leftover_won": left_won, "avg_leftover_lost": left_lost}
-
-    def _result(self, first, second):
-        return {"trials": 4000, "phases": [first, second]}
+    def _result(nodes, leaves, trials=4000):
+        """nodes: {path: (count, avg_leftover)}; the root is added here."""
+        built = {(): {"count": trials, "avg_leftover": 233}}
+        built.update({p: {"count": c, "avg_leftover": left} for p, (c, left) in nodes.items()})
+        return {"trials": trials, "nodes": built, "leaves": leaves}
 
     def test_win_route_multiplies_and_loss_route_keeps_pulls(self):
-        routes = build_route_groups(self.STRATEGY, self._result(
-            self._phase(4000, 3000, lost=1000, start=233, left_won=182.4, left_lost=183.1),
-            self._phase(3000, 2970, ran_out=30, start=182.4, left_won=128.6),
+        routes, omitted = build_route_groups(self.STRATEGY, self._result(
+            {("won",): (3000, 182.4), ("lost",): (1000, 183.1),
+             ("won", "won"): (2970, 128.6), ("won", "ran_out"): (30, 0.2)},
+            {("won", "won"): 2970, ("lost",): 1000, ("won", "ran_out"): 30},
         ))
+        assert omitted is None
         assert [r["label"] for r in routes] == [
             "Route 1: Weapon won, then Character obtained",
             "Route 2: Weapon lost, stop",
@@ -968,28 +1037,68 @@ class TestBuildRouteGroups:
         assert [_row(l) for l in win["lines"]] == [
             [233, "WIN 75.00%", "182 LEFT"],
             [182, "WIN 99.00%", "RAN OUT 1.00%", "129 LEFT"],
-            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT"],
+            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT", "OBTAINED: 1 CHARACTER AND 1 WEAPON"],
         ]
-        assert win["chance"] == 74.25 and win["stopped_banner"] is None
+        assert win["chance"] == 74.25 and win["ending"] == "complete"
         assert [_row(l) for l in loss["lines"]] == [
-            [233, "LOSS 25.00%", "183 LEFT"],
-            ["25.00%", "183 KEPT", "WEAPON GUARANTEE: TRUE"],
+            [233, "LOSS 25.00%", "183 KEPT"],
+            ["25.00%", "183 KEPT", "OBTAINED: NONE", "WEAPON GUARANTEE: TRUE"],
         ]
-        assert loss["chance"] == 25.0 and loss["stopped_banner"] == "weapon"
+        assert loss["chance"] == 25.0 and loss["ending"] == "lost" and loss["stopped_banner"] == "weapon"
+
+    def test_a_capped_step_branches_into_its_own_route(self):
+        strategy = [{"banner": "char", "copies": 1, "max_pulls": 80, "on_cap": "continue"},
+                    {"banner": "weapon", "copies": 1}]
+        routes, _ = build_route_groups(strategy, self._result(
+            {("won",): (2000, 180), ("capped",): (2000, 162),
+             ("won", "won"): (2000, 116), ("capped", "won"): (2000, 98)},
+            {("won", "won"): 2000, ("capped", "won"): 2000},
+        ))
+        assert [r["label"] for r in routes] == [
+            "Route 1: Character obtained, then Weapon obtained",
+            "Route 2: Character capped, then Weapon obtained",
+        ]
+        capped = routes[1]
+        assert capped["lines"][0]["label"] == "Run 1: Character, at most 80 pulls, then move on"
+        assert _row(capped["lines"][0]) == [233, "CAPPED 50.00%", "162 LEFT"]
+        # With kept pity known, the capped line shows what carries over.
+        nodes = self._result({("won",): (2000, 180), ("capped",): (2000, 162),
+                              ("won", "won"): (2000, 116), ("capped", "won"): (2000, 98)},
+                             {("won", "won"): 2000, ("capped", "won"): 2000})
+        nodes["nodes"][("capped",)]["avg_pity"] = 61.7
+        routes, _ = build_route_groups(strategy, nodes)
+        assert _row(routes[1]["lines"][0]) == [233, "CAPPED 50.00%", "62 PITY KEPT", "162 LEFT"]
+        assert routes[1]["capped_pity"] == [("character", 62)]
+        assert _row(capped["lines"][-1])[-1] == "OBTAINED: 1 WEAPON"
+        assert capped["ending"] == "partial"
 
     def test_a_stop_route_no_run_took_is_omitted(self):
-        routes = build_route_groups(self.STRATEGY, self._result(
-            self._phase(4000, 4000, start=233, left_won=180),
-            self._phase(4000, 4000, start=180, left_won=120),
+        routes, _ = build_route_groups(self.STRATEGY, self._result(
+            {("won",): (4000, 180), ("won", "won"): (4000, 120)}, {("won", "won"): 4000},
         ))
         assert [r["label"] for r in routes] == ["Route 1: Weapon won, then Character obtained"]
 
     def test_a_rare_route_flags_its_leftover_as_approximate(self):
         rare = MIN_ROUTE_SAMPLE - 1
-        routes = build_route_groups(self.STRATEGY, self._result(
-            self._phase(4000, 4000 - rare, lost=rare, start=233, left_won=180, left_lost=200),
-            self._phase(4000 - rare, 4000 - rare, start=180, left_won=120),
+        routes, _ = build_route_groups(self.STRATEGY, self._result(
+            {("won",): (4000 - rare, 180), ("lost",): (rare, 200), ("won", "won"): (4000 - rare, 120)},
+            {("won", "won"): 4000 - rare, ("lost",): rare},
         ))
         kept = routes[1]["lines"][-1]["pills"][1]
         assert kept["value"] == "~200 KEPT"
         assert f"only {rare} simulated runs" in kept["tooltip"]
+
+    def test_routes_beyond_the_max_are_summarized_not_drawn(self):
+        strategy = [{"banner": "char", "copies": 1, "max_pulls": 50, "on_cap": "continue", "stop_on_loss": True},
+                    {"banner": "weapon", "copies": 1, "max_pulls": 50, "on_cap": "continue", "stop_on_loss": True}]
+        # 7 leaves: won/capped first, each followed by won/capped/lost, plus
+        # a first-step loss. The rarest (400-run) leaf beyond 6 is dropped.
+        nodes = {("won",): (1300, 150), ("capped",): (1300, 150), ("lost",): (1400, 150)}
+        leaves = {("lost",): 1400}
+        for first in ("won", "capped"):
+            for second, count in (("won", 450), ("capped", 400), ("lost", 450)):
+                nodes[(first, second)] = (count, 100)
+                leaves[(first, second)] = count
+        routes, omitted = build_route_groups(strategy, self._result(nodes, leaves))
+        assert len(routes) == 6
+        assert omitted == {"routes": 1, "chance": 10.0}
