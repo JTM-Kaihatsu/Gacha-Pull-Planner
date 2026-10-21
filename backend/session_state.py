@@ -82,6 +82,7 @@ TOOLTIPS = {
     "route_obtained": "What this route ends up with, from the runs it won",
     "route_pity_kept": "Average pity left on this banner after stopping at the limit; it carries over to your next pulls on this banner",
     "route_omitted": "Combined chance of the rarer routes not drawn individually, out of every simulated run",
+    "stopped": "Pulls kept after choosing to stop pulling at this point",
     "reserve": "Pulls you're keeping in reserve, set aside before anything below is simulated",
     "reserve_op": "Pulls set aside, not spent",
     "available": "Pulls actually available to spend after setting the reserve aside",
@@ -347,7 +348,7 @@ def _normalize_pity_carryover(events, baseline_params):
     return {"ok": True, "events": normalized}
 
 
-def _process_events(events, running_pulls, desired_characters, desired_weapons, full_4star_chars):
+def _process_events(events, running_pulls, desired_characters, desired_weapons, full_4star_chars, prior=None):
     """Walk the event sequence in order, applying the deterministic game
     rules, and build one pill-line per event. Returns (lines, char_obtained,
     weapon_obtained, char_guarantee, weapon_guarantee, char_events, weapon_events,
@@ -360,11 +361,19 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
     reported separately from `error` so the caller can offer a clarifying
     question instead of declining outright. At most one can ever occur,
     it's a single cumulative running total, not an independent per-event
-    check, so `budget_conflict` is a single dict or None, never a list."""
+    check, so `budget_conflict` is a single dict or None, never a list.
+
+    `prior` (a branch continuing from shared events reconciled earlier, see
+    reconcile) seeds the copies already obtained and runs already shown per
+    banner, so a branch's lines keep numbering on, its "obtained X of Y"
+    counts what the shared part already won, and a repeat copy still earns
+    its dupe refund. The returned event counts stay this call's own."""
     starting_budget = running_pulls
-    counts = {"character": 0, "weapon": 0}
+    prior = prior or {}
+    prior_runs = prior.get("runs") or {"character": 0, "weapon": 0}
+    counts = dict(prior.get("obtained") or {"character": 0, "weapon": 0})
     guarantees = {"character": False, "weapon": False}
-    run_index = {"character": 0, "weapon": 0}
+    run_index = dict(prior_runs)
     desired = {"character": desired_characters, "weapon": desired_weapons}
     lines = []
     any_unknown_pity = False
@@ -424,7 +433,8 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
                 "overrun": -running_pulls,
             }
             return (lines, counts["character"], counts["weapon"], guarantees["character"],
-                    guarantees["weapon"], run_index["character"], run_index["weapon"], running_pulls,
+                    guarantees["weapon"], run_index["character"] - prior_runs["character"],
+                    run_index["weapon"] - prior_runs["weapon"], running_pulls,
                     any_unknown_pity, None, budget_conflict)
 
         refund_pill = (
@@ -491,7 +501,8 @@ def _process_events(events, running_pulls, desired_characters, desired_weapons, 
         })
 
     return (lines, counts["character"], counts["weapon"], guarantees["character"], guarantees["weapon"],
-            run_index["character"], run_index["weapon"], running_pulls, any_unknown_pity, None, None)
+            run_index["character"] - prior_runs["character"], run_index["weapon"] - prior_runs["weapon"],
+            running_pulls, any_unknown_pity, None, None)
 
 
 def _build_conflict_block(conflict):
@@ -583,6 +594,9 @@ def _build_budget_conflict_block(conflict):
     consumed = conflict["consumed"]
     starting_budget = conflict["starting_budget"]
     overrun = conflict["overrun"]
+    # A branch's budget is what the shared events above left, not the
+    # form's starting number, so its question has to say which it means.
+    source = conflict.get("budget_source") or "the initial situation states you started with only"
     return {
         # At most one budget conflict can ever occur per reconciliation
         # (it's a single cumulative running total, not an independent
@@ -591,8 +605,8 @@ def _build_budget_conflict_block(conflict):
         "event_order": conflict["event_order"],
         "header": "For Total Pulls Used",
         "question": (
-            f"You reported a total of {consumed} pulls used across your events, but the initial "
-            f"situation states you started with only {starting_budget} pulls, {overrun} short. Did "
+            f"You reported a total of {consumed} pulls used across your events, but {source} "
+            f"{starting_budget} pulls, {overrun} short. Did "
             f"you gain {overrun} more pulls since the initial situation, did the initial number of "
             f"pulls change, or is it something else?"
         ),
@@ -630,7 +644,7 @@ def _build_budget_conflict_result(lines, conflict):
     }
 
 
-def reconcile(extracted, baseline_params, baseline_stats):
+def reconcile(extracted, baseline_params, baseline_stats, prior=None):
     """Turn the extraction model's structured event sequence into a
     verified, ready-to-simulate state plus the structured pill data the UI
     renders, or a specific error to feed back for one corrective
@@ -641,6 +655,15 @@ def reconcile(extracted, baseline_params, baseline_stats):
     caller should fall through to the existing baseline-driven flow. When
     `applies` is True, `ok` says whether reconciliation succeeded; on
     failure `error` names the specific inconsistency for the retry prompt.
+
+    Every successful result carries `end_state` (the pulls, pity,
+    guarantees, copies, and runs after everything reconciled here) and
+    `fact_line_count` (how many leading lines are the question's own facts,
+    before the start-state and goal lines), so a branching question can
+    reconcile its shared part once and then each branch FROM that state:
+    pass the branch's baseline built from end_state, plus `prior` ({"runs",
+    "obtained"} per banner, and optionally "budget_source", the wording a
+    budget clarifying question should use for where that budget came from).
     """
     if not extracted.get("has_event_sequence"):
         return {"applies": False}
@@ -722,7 +745,9 @@ def reconcile(extracted, baseline_params, baseline_stats):
     (event_lines, char_obtained, weapon_obtained, char_guarantee, weapon_guarantee,
      char_events, weapon_events, running_pulls, any_unknown_pity,
      error, budget_conflict) = _process_events(events, total_pulls_budget, desired_characters, desired_weapons,
-                                                baseline_params["full_4star_chars"])
+                                                baseline_params["full_4star_chars"], prior=prior)
+    if budget_conflict and prior and prior.get("budget_source"):
+        budget_conflict["budget_source"] = prior["budget_source"]
     if budget_conflict:
         return _build_budget_conflict_result(event_lines, budget_conflict)
     if error:
@@ -827,11 +852,29 @@ def reconcile(extracted, baseline_params, baseline_stats):
     start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
     start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
 
+    prior_runs = (prior or {}).get("runs") or {"character": 0, "weapon": 0}
+    end_state = {
+        "total_pulls": total_pulls,
+        "start_char_pity": start_char_pity, "start_char_guarantee": start_char_guarantee,
+        "start_weapon_pity": start_weapon_pity, "start_weapon_guarantee": start_weapon_guarantee,
+        "desired_characters": desired_characters, "desired_weapons": desired_weapons,
+        "obtained": {"character": char_obtained, "weapon": weapon_obtained},
+        "runs": {"character": prior_runs["character"] + char_events,
+                 "weapon": prior_runs["weapon"] + weapon_events},
+    }
+    fact_line_count = len(lines)
+
+    def _with_state(result):
+        if result.get("ok"):
+            result["end_state"] = end_state
+            result["fact_line_count"] = fact_line_count
+        return result
+
     if plan:
-        return _reconcile_plan(
+        return _with_state(_reconcile_plan(
             plan, lines, total_pulls, char_obtained, weapon_obtained,
             start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee,
-        )
+        ))
 
     chars_remaining = max(desired_characters - char_obtained, 0)
     weapons_remaining = max(desired_weapons - weapon_obtained, 0)
@@ -847,27 +890,27 @@ def reconcile(extracted, baseline_params, baseline_stats):
         lines.append(goal_line)
         lines.append({"label": "Goal Status",
                       "pills": [_pill("status", "GOAL COMPLETE", "green", "status")]})
-        return {
+        return _with_state({
             "applies": True, "ok": True, "goal_complete": True, "pulls_exhausted": False,
             "strategy": [], "total_pulls": total_pulls,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
             "remaining_characters": 0, "remaining_weapons": 0,
             "lines": lines,
-        }
+        })
 
     if total_pulls <= 0:
         lines.append(goal_line)
         lines.append({"label": "Goal Status",
                       "pills": [_pill("status", "NO PULLS REMAIN", "red", "status")]})
-        return {
+        return _with_state({
             "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": True,
             "strategy": [], "total_pulls": 0,
             "start_char_pity": 0, "start_char_guarantee": False,
             "start_weapon_pity": 0, "start_weapon_guarantee": False,
             "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
             "lines": lines,
-        }
+        })
 
     if chars_remaining >= 1 and weapons_remaining >= 1:
         # Both banners still need a run, but they draw from the SAME shared
@@ -884,7 +927,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
         })
     elif chars_remaining >= 1:
         lines.append({
-            "label": _run_label("character", char_events + 1, char_obtained, desired_characters),
+            "label": _run_label("character", end_state["runs"]["character"] + 1, char_obtained, desired_characters),
             "pills": [
                 _pill("number", total_pulls, "cyan", "start_pulls"),
                 _pill("flag", "GUARANTEE: TRUE" if start_char_guarantee else "GUARANTEE: FALSE",
@@ -893,7 +936,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
         })
     elif weapons_remaining >= 1:
         lines.append({
-            "label": _run_label("weapon", weapon_events + 1, weapon_obtained, desired_weapons),
+            "label": _run_label("weapon", end_state["runs"]["weapon"] + 1, weapon_obtained, desired_weapons),
             "pills": [
                 _pill("number", total_pulls, "cyan", "start_pulls"),
                 _pill("flag", "GUARANTEE: TRUE" if start_weapon_guarantee else "GUARANTEE: FALSE",
@@ -928,7 +971,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
     if weapons_remaining >= 1 and "weapon" not in seen_banners:
         strategy.append({"banner": "weapon", "copies": weapons_remaining})
 
-    return {
+    return _with_state({
         "applies": True, "ok": True, "goal_complete": False, "pulls_exhausted": False,
         "goal_only": goal_only,
         "budget_only": budget_only,
@@ -941,7 +984,7 @@ def reconcile(extracted, baseline_params, baseline_stats):
         "start_weapon_guarantee": start_weapon_guarantee,
         "remaining_characters": chars_remaining, "remaining_weapons": weapons_remaining,
         "lines": lines,
-    }
+    })
 
 
 def _reconcile_plan(plan, lines, total_pulls, char_obtained, weapon_obtained,
@@ -1213,6 +1256,20 @@ def build_route_groups(strategy, plan_result):
         omitted = {"routes": len(dropped),
                    "chance": round(sum(leaves[p] for p in dropped) / plan_result["trials"] * 100, 2)}
     return routes, omitted
+
+
+def build_stop_line(scenario):
+    """A branch that stops pulling by choice ends on what it keeps: the
+    pulls left and each banner's guarantee, which carry over to whenever
+    the player pulls again."""
+    return {
+        "label": "Stops Here",
+        "pills": [
+            _pill("number", f"{scenario['total_pulls']} KEPT", "light_green", "stopped"),
+            *_start_state_pills(scenario["total_pulls"], scenario["start_char_guarantee"],
+                                scenario["start_weapon_guarantee"])[1:],
+        ],
+    }
 
 
 def build_omitted_routes_group(omitted):
