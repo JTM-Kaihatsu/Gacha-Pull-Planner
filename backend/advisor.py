@@ -901,7 +901,8 @@ def _continue_from(state, baseline_params, baseline_stats, from_shared):
     }
     stats = {**baseline_stats, "desired_characters": state["desired_characters"],
              "desired_weapons": state["desired_weapons"]}
-    prior = {"runs": state["runs"], "obtained": state["obtained"]}
+    prior = {"runs": state["runs"], "obtained": state["obtained"],
+             "guarantee_sources": state.get("guarantee_sources")}
     if from_shared:
         prior["budget_source"] = "the events shared by every scenario above leave only"
     return params, stats, prior
@@ -1244,9 +1245,8 @@ def _simulate_routes(baseline_params, scenario):
         leftover = round(route["avg_leftover"])
         if route["ending"] == "lost":
             ending = (
-                f"The plan stops here, keeping {leftover} pulls on average, and the next 5-star on "
-                f"the {route['stopped_banner']} banner is now guaranteed to be the featured one (not just "
-                f"any 5-star) whenever they pull on it again."
+                f"The plan stops here after losing the {route['stopped_banner']} 5-star, keeping {leftover} "
+                f"pulls on average."
             )
         elif route["ending"] == "capped_stop":
             ending = (
@@ -1261,18 +1261,33 @@ def _simulate_routes(baseline_params, scenario):
             )
         else:
             ending = f"Every step is obtained, with {leftover} pulls left on average."
-        for banner in route["guaranteed_banners"]:
-            if banner != route["stopped_banner"]:
-                ending += (
-                    f" Losing on the {banner} banner leaves its next 5-star guaranteed to be the featured "
-                    f"one, whenever they pull there again."
-                )
+        # Every banner's guarantee where this route ends, not just one the
+        # route's own loss created: a guarantee carried in from before the
+        # plan (e.g. an earlier lost 50/50) was going unmentioned otherwise.
+        guarantee_bits = []
+        for banner, share in route["end_guarantees"].items():
+            source = (
+                "carried over from before this plan, since this route never pulls on it"
+                if banner not in route["pulled_banners"] else "from this route's own pulls"
+            )
+            if share >= 1:
+                guarantee_bits.append(
+                    f"the {banner} banner's next 5-star IS guaranteed to be the featured one ({source})")
+            elif share <= 0:
+                guarantee_bits.append(f"the {banner} banner has no guarantee (its next 5-star is a "
+                                      f"{'50/50' if banner == 'character' else '75/25'})")
+            else:
+                guarantee_bits.append(f"the {banner} banner ends guaranteed in {round(share * 100)}% of these runs")
+        if guarantee_bits:
+            ending += (
+                f" Where this route leaves the player: {'; '.join(guarantee_bits)}. Mention every guarantee "
+                f"this route leaves, not only the one a loss here created."
+            )
         for banner, pity in route["capped_pity"]:
             cfg = baseline_params["char_pity_config" if banner == "character" else "weapon_pity_config"]
             ending += (
                 f" Stopping at the limit keeps about {pity} pity on the {banner} banner, which carries over "
-                f"to their next pulls there. Unlike a loss, it leaves NO guarantee: the next 5-star on the "
-                f"{banner} banner is still a {'50/50' if banner == 'character' else '75/25'}."
+                f"to their next pulls there. Unlike a loss, hitting a limit creates no guarantee by itself."
             )
             # The most useful thing to say about a limit is often where it
             # falls on the pity curve, which the model doesn't reliably

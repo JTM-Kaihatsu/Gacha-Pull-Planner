@@ -242,7 +242,8 @@ def simulate_combo_verbose(
         else:
             outcome = "ran_out"
         phase_results.append({"outcome": outcome, "start": phase_start, "leftover": remaining,
-                              "pity": pity_char if banner == "char" else pity_weapon})
+                              "pity": pity_char if banner == "char" else pity_weapon,
+                              "guarantees": {"char": guarantee_char, "weapon": guarantee_weapon}})
         # Running out ends the plan as surely as stopping does; marking it
         # keeps every later phase "not_reached" rather than a second,
         # redundant "ran_out" on an already-empty budget.
@@ -583,14 +584,17 @@ def simulate_plan(
     those rates along it.
 
     Returns {"trials", "nodes": {path_tuple: {"count", "avg_leftover",
-    "avg_pity"}}, "leaves": {path_tuple: count}}, where avg_leftover is the
-    average pulls left after that path's last phase (the root () is the
-    starting budget), avg_pity the average pity left on that phase's banner
-    (it carries over to the next pulls there, which matters most for a
-    capped step), and leaves counts the trials whose whole plan ended
-    exactly there."""
+    "avg_pity", "guaranteed"}}, "leaves": {path_tuple: count}}, where
+    avg_leftover is the average pulls left after that path's last phase
+    (the root () is the starting budget), avg_pity the average pity left on
+    that phase's banner (it carries over to the next pulls there, which
+    matters most for a capped step), guaranteed the share of those runs
+    each banner ends that phase guaranteed on ({"char", "weapon"}, 0 to 1,
+    including a guarantee carried in untouched from before the plan), and
+    leaves counts the trials whose whole plan ended exactly there."""
     leftovers = {(): []}
     pities = {(): [0]}
+    guarantees = {(): []}
     leaves = {}
 
     for _ in range(trials):
@@ -606,6 +610,7 @@ def simulate_plan(
             weapon_pity_config=weapon_pity_config,
         )
         leftovers[()].append(total_pulls)
+        guarantees[()].append({"char": start_char_guarantee, "weapon": start_weapon_guarantee})
         path = ()
         for result in meta["phase_results"]:
             if result["outcome"] == "not_reached":
@@ -613,13 +618,16 @@ def simulate_plan(
             path = path + (result["outcome"],)
             leftovers.setdefault(path, []).append(result["leftover"])
             pities.setdefault(path, []).append(result["pity"])
+            guarantees.setdefault(path, []).append(result["guarantees"])
         leaves[path] = leaves.get(path, 0) + 1
 
     return {
         "trials": trials,
         "nodes": {
             path: {"count": len(values), "avg_leftover": round(float(np.mean(values)), 2),
-                   "avg_pity": round(float(np.mean(pities[path])), 2)}
+                   "avg_pity": round(float(np.mean(pities[path])), 2),
+                   "guaranteed": {banner: round(float(np.mean([g[banner] for g in guarantees[path]])), 4)
+                                  for banner in ("char", "weapon")}}
             for path, values in leftovers.items()
         },
         "leaves": leaves,

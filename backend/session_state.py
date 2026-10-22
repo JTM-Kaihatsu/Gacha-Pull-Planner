@@ -93,7 +93,7 @@ TOOLTIPS = {
     "route_factor": "This run's rate, from the line above",
     "multiply_op": "Multiplied: each run only happens when the run before it was won",
     "route_chance": "Chance of this whole route, out of every simulated run",
-    "route_guarantee": "Losing that 5-star means the next 5-star on this banner is guaranteed to be the featured one, whenever you pull on it again",
+    "route_guarantee": "Whether this banner's next 5-star is guaranteed to be the featured one when this route ends, across its simulated runs; a guarantee from before the plan carries through if the route never wins a 5-star on this banner",
 }
 
 _BANNER_LABEL = {"character": "Character", "weapon": "Weapon"}
@@ -222,16 +222,24 @@ def _validate_plan(plan, hard_pity):
     return None
 
 
-def _start_state_pills(total_pulls, char_guarantee, weapon_guarantee, tooltip_key="start_pulls"):
-    return [
-        _pill("number", total_pulls, "cyan", tooltip_key),
-        _pill("banner", "CHARACTER", "default", "banner_marker"),
-        _pill("flag", "GUARANTEE: TRUE" if char_guarantee else "GUARANTEE: FALSE",
-              "green" if char_guarantee else "red", "guarantee"),
-        _pill("banner", "WEAPON", "default", "banner_marker"),
-        _pill("flag", "GUARANTEE: TRUE" if weapon_guarantee else "GUARANTEE: FALSE",
-              "green" if weapon_guarantee else "red", "guarantee"),
-    ]
+def _start_state_pills(total_pulls, char_guarantee, weapon_guarantee, tooltip_key="start_pulls",
+                       pity=None, sources=None):
+    """The pulls plus each banner's state. With `pity` ({"character",
+    "weapon"}) each banner also shows its pity, the same layout as the
+    Starting Situation panel; with `sources`, each guarantee's tooltip says
+    where it came from instead of the generic one."""
+    pills = [_pill("number", total_pulls, "cyan", tooltip_key)]
+    for banner, guaranteed in (("character", char_guarantee), ("weapon", weapon_guarantee)):
+        pills.append(_pill("banner", banner.upper(), "default", "banner_marker"))
+        if pity is not None:
+            pills.append({"kind": "number", "value": f"{pity[banner]} pity", "color": "cyan",
+                          "tooltip": f"Pity on the {banner} banner at this point"})
+        flag = _pill("flag", "GUARANTEE: TRUE" if guaranteed else "GUARANTEE: FALSE",
+                     "green" if guaranteed else "red", "guarantee")
+        if sources and sources.get(banner):
+            flag["tooltip"] = sources[banner]
+        pills.append(flag)
+    return pills
 
 
 def _run_label(banner, run_number, obtained, desired):
@@ -872,8 +880,27 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
     start_weapon_pity = 0 if weapon_events else baseline_params["start_weapon_pity"]
     start_weapon_guarantee = weapon_guarantee if weapon_events else baseline_params["start_weapon_guarantee"]
 
+    # Where each banner's guarantee came from, for its tooltip: the last
+    # event on that banner (one pill line per event, in order), or, when
+    # there's none here, whatever the situation above already said.
+    guarantee_sources = {}
+    for banner in ("character", "weapon"):
+        on_banner = [i for i, e in enumerate(events) if e["banner_type"] == banner]
+        if on_banner:
+            run = event_lines[on_banner[-1]]["label"].split(" (")[0]
+            if events[on_banner[-1]]["outcome"] == "loss":
+                guarantee_sources[banner] = (
+                    f"Guaranteed: {run} above lost its {'50/50' if banner == 'character' else '75/25'}, so the "
+                    f"next 5-star on this banner is the featured one")
+            else:
+                guarantee_sources[banner] = f"Not guaranteed: {run} above won, which resets it"
+        else:
+            guarantee_sources[banner] = ((prior or {}).get("guarantee_sources") or {}).get(banner) or (
+                "Carried over unchanged from the Starting Situation")
+
     prior_runs = (prior or {}).get("runs") or {"character": 0, "weapon": 0}
     end_state = {
+        "guarantee_sources": guarantee_sources,
         "total_pulls": total_pulls,
         "start_char_pity": start_char_pity, "start_char_guarantee": start_char_guarantee,
         "start_weapon_pity": start_weapon_pity, "start_weapon_guarantee": start_weapon_guarantee,
@@ -894,6 +921,7 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
         return _with_state(_reconcile_plan(
             plan, lines, total_pulls, char_obtained, weapon_obtained,
             start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee,
+            guarantee_sources,
         ))
 
     chars_remaining = max(desired_characters - char_obtained, 0)
@@ -1008,7 +1036,8 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
 
 
 def _reconcile_plan(plan, lines, total_pulls, char_obtained, weapon_obtained,
-                    start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee):
+                    start_char_pity, start_char_guarantee, start_weapon_pity, start_weapon_guarantee,
+                    guarantee_sources=None):
     """Finish reconciling a question with a conditional plan: everything
     before it (events, additional pulls) is already folded into `lines`
     and the start state, so this only adds the shared starting point every
@@ -1063,7 +1092,12 @@ def _reconcile_plan(plan, lines, total_pulls, char_obtained, weapon_obtained,
 
     lines.append({
         "label": "Starting Point for Every Route",
-        "pills": _start_state_pills(total_pulls, start_char_guarantee, start_weapon_guarantee, "route_start"),
+        # The state every route branches from, in full: each banner's pity
+        # and guarantee, with where that guarantee came from.
+        "pills": _start_state_pills(
+            total_pulls, start_char_guarantee, start_weapon_guarantee, "route_start",
+            pity={"character": start_char_pity, "weapon": start_weapon_pity}, sources=guarantee_sources,
+        ),
     })
     lines.append(goal_line)
 
@@ -1180,7 +1214,9 @@ def build_route_groups(strategy, plan_result):
 
     Returns (routes, omitted). routes is a list of {"label", "lines",
     "chance", "avg_leftover", "sample", "ending", "obtained",
-    "stopped_banner", "guaranteed_banners", "capped_pity"} dicts ("ending"
+    "stopped_banner", "end_guarantees", "pulled_banners", "capped_pity"}
+    dicts (end_guarantees: each banner's share of runs ending guaranteed;
+    "ending"
     is "complete", "lost", "capped_stop", or "partial": a capped or
     switched step moved on, so not every copy was won);
     omitted is None, or {"routes", "chance"} for routes beyond MAX_ROUTES,
@@ -1265,21 +1301,30 @@ def build_route_groups(strategy, plan_result):
         result_pills.append(_pill("status", f"OBTAINED: {obtained}", "green" if ending == "complete" else "default",
                                   "route_obtained"))
         stopped_banner = _PHASE_BANNER[last_phase["banner"]] if ending == "lost" else None
-        # A loss, whether it stopped the plan or moved it on, leaves that
-        # banner guaranteed, unless a later step pulled on it again.
-        guaranteed = []
-        for i, o in enumerate(path):
-            banner = strategy[i]["banner"]
-            pulled_later = any(path[j] != "skipped" and strategy[j]["banner"] == banner
-                               for j in range(i + 1, len(path)))
-            if o in ("lost", "switched") and not pulled_later and _PHASE_BANNER[banner] not in guaranteed:
-                guaranteed.append(_PHASE_BANNER[banner])
-        for banner in guaranteed:
-            result_pills.append(_pill("flag", f"{banner.upper()} GUARANTEE: TRUE", "green", "route_guarantee"))
+        # Where this route leaves BOTH banners, measured across its own
+        # simulated runs: a loss here, a win here, or a guarantee carried
+        # through untouched from before the plan all show the same way, so
+        # every route ends on the complete state the player walks away with.
+        end_guarantees = {}
+        for key in ("char", "weapon"):
+            share = nodes[path].get("guaranteed", {}).get(key)
+            if share is None:
+                continue
+            banner = _PHASE_BANNER[key]
+            end_guarantees[banner] = share
+            if share >= 1:
+                text, color = "TRUE", "green"
+            elif share <= 0:
+                text, color = "FALSE", "red"
+            else:
+                text, color = f"{share * 100:.0f}% OF RUNS", "default"
+            result_pills.append(_pill("flag", f"{banner.upper()} GUARANTEE: {text}", color, "route_guarantee"))
         lines.append({"label": "Route Result", "pills": result_pills})
 
         routes.append({
-            "guaranteed_banners": guaranteed,
+            "end_guarantees": end_guarantees,
+            "pulled_banners": sorted({_PHASE_BANNER[strategy[i]["banner"]]
+                                      for i, o in enumerate(path) if o != "skipped"}),
             "label": ", then ".join(_route_step_outcome_text(strategy[i], o)
                                     for i, o in enumerate(path) if o != "skipped"),
             "lines": lines, "chance": chance,
@@ -1309,8 +1354,11 @@ def build_stop_line(scenario):
         "label": "Stops Here",
         "pills": [
             _pill("number", f"{scenario['total_pulls']} KEPT", "light_green", "stopped"),
-            *_start_state_pills(scenario["total_pulls"], scenario["start_char_guarantee"],
-                                scenario["start_weapon_guarantee"])[1:],
+            *_start_state_pills(
+                scenario["total_pulls"], scenario["start_char_guarantee"], scenario["start_weapon_guarantee"],
+                pity={"character": scenario["start_char_pity"], "weapon": scenario["start_weapon_pity"]},
+                sources=scenario.get("end_state", {}).get("guarantee_sources"),
+            )[1:],
         ],
     }
 

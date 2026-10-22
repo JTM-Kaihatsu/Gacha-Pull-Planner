@@ -913,7 +913,12 @@ class TestConditionalPlan:
                           "Starting Point for Every Route", "Current Goal"]
         assert _row(result["lines"][0]) == [140, "−", 30, "+", 3, "=", 113, "LOSS"]
         assert _row(result["lines"][1]) == [113, "+", 120, "=", 233]
-        assert _row(result["lines"][2]) == [233, "CHARACTER", "GUARANTEE: TRUE", "WEAPON", "GUARANTEE: FALSE"]
+        assert _row(result["lines"][2]) == [233, "CHARACTER", "0 pity", "GUARANTEE: TRUE",
+                                            "WEAPON", "0 pity", "GUARANTEE: FALSE"]
+        # Each guarantee says where it came from.
+        char_flag, weapon_flag = result["lines"][2]["pills"][3], result["lines"][2]["pills"][6]
+        assert char_flag["tooltip"].startswith("Guaranteed: Character Run 1 above lost its 50/50")
+        assert weapon_flag["tooltip"] == "Carried over unchanged from the Starting Situation"
         assert _row(result["lines"][3]) == ["1 character and 1 weapon"]
         assert result["total_pulls"] == 233
         assert result["start_char_guarantee"] is True
@@ -1025,11 +1030,16 @@ class TestBuildRouteGroups:
         return {"trials": trials, "nodes": built, "leaves": leaves}
 
     def test_win_route_multiplies_and_loss_route_keeps_pulls(self):
-        routes, omitted = build_route_groups(self.STRATEGY, self._result(
+        result = self._result(
             {("won",): (3000, 182.4), ("lost",): (1000, 183.1),
              ("won", "won"): (2970, 128.6), ("won", "ran_out"): (30, 0.2)},
             {("won", "won"): 2970, ("lost",): 1000, ("won", "ran_out"): 30},
-        ))
+        )
+        # The character started guaranteed (an earlier lost 50/50): the win
+        # route uses it up, the loss route never touches it.
+        result["nodes"][("won", "won")]["guaranteed"] = {"char": 0.0, "weapon": 0.0}
+        result["nodes"][("lost",)]["guaranteed"] = {"char": 1.0, "weapon": 1.0}
+        routes, omitted = build_route_groups(self.STRATEGY, result)
         assert omitted is None
         assert [r["label"] for r in routes] == [
             "Route 1: Weapon won, then Character obtained",
@@ -1039,14 +1049,23 @@ class TestBuildRouteGroups:
         assert [_row(l) for l in win["lines"]] == [
             [233, "WIN 75.00%", "182 LEFT"],
             [182, "WIN 99.00%", "RAN OUT 1.00%", "129 LEFT"],
-            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT", "OBTAINED: 1 CHARACTER AND 1 WEAPON"],
+            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT", "OBTAINED: 1 CHARACTER AND 1 WEAPON",
+             "CHARACTER GUARANTEE: FALSE", "WEAPON GUARANTEE: FALSE"],
         ]
         assert win["chance"] == 74.25 and win["ending"] == "complete"
         assert [_row(l) for l in loss["lines"]] == [
             [233, "LOSS 25.00%", "183 KEPT"],
-            ["25.00%", "183 KEPT", "OBTAINED: NONE", "WEAPON GUARANTEE: TRUE"],
+            ["25.00%", "183 KEPT", "OBTAINED: NONE", "CHARACTER GUARANTEE: TRUE", "WEAPON GUARANTEE: TRUE"],
         ]
         assert loss["chance"] == 25.0 and loss["ending"] == "lost" and loss["stopped_banner"] == "weapon"
+        assert loss["end_guarantees"] == {"character": 1.0, "weapon": 1.0}
+        assert loss["pulled_banners"] == ["weapon"]
+
+    def test_a_mixed_guarantee_shows_its_share_of_runs(self):
+        result = self._result({("won",): (4000, 180), ("won", "won"): (4000, 120)}, {("won", "won"): 4000})
+        result["nodes"][("won", "won")]["guaranteed"] = {"char": 0.37, "weapon": 0.0}
+        routes, _ = build_route_groups(self.STRATEGY, result)
+        assert _row(routes[0]["lines"][-1])[-2:] == ["CHARACTER GUARANTEE: 37% OF RUNS", "WEAPON GUARANTEE: FALSE"]
 
     def test_a_capped_step_branches_into_its_own_route(self):
         strategy = [{"banner": "char", "copies": 1, "max_pulls": 80, "on_cap": "continue"},
@@ -1140,6 +1159,7 @@ class TestSkipOnLoss:
             ("switched", "skipped", "won"): (2000, 142),
         }.items():
             built[path] = {"count": count, "avg_leftover": left}
+        built[("switched", "skipped", "won")]["guaranteed"] = {"char": 1.0, "weapon": 0.0}
         routes, _ = build_route_groups(self.STRATEGY, {
             "trials": 4000, "nodes": built,
             "leaves": {("won", "won", "won"): 2000, ("switched", "skipped", "won"): 2000},
@@ -1154,8 +1174,7 @@ class TestSkipOnLoss:
         ]
         assert _row(switched["lines"][0]) == [260, "LOSS 50.00%", "205 LEFT"]
         assert _row(switched["lines"][-1]) == [
-            "50.00%", "×", "100.00%", "=", "50.00%", "142 LEFT", "OBTAINED: 1 WEAPON", "CHARACTER GUARANTEE: TRUE",
+            "50.00%", "×", "100.00%", "=", "50.00%", "142 LEFT", "OBTAINED: 1 WEAPON",
+            "CHARACTER GUARANTEE: TRUE", "WEAPON GUARANTEE: FALSE",
         ]
-        assert switched["ending"] == "partial" and switched["guaranteed_banners"] == ["character"]
-        # The win route pulled the character again, so it keeps no guarantee.
-        assert routes[0]["guaranteed_banners"] == []
+        assert switched["ending"] == "partial" and switched["end_guarantees"]["character"] == 1.0

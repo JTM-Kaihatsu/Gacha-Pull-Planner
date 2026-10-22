@@ -468,7 +468,8 @@ class TestStepLimits:
         never_hit = {"base_rate": 0.0, "soft_pity_start": 200, "hard_pity": 300}
         *_, meta = simulate_combo_verbose(233, plan, char_pity_config=never_hit, simulate_4star=False)
         first, second = meta["phase_results"]
-        assert first == {"outcome": "capped", "start": 233, "leftover": 223, "pity": 10}
+        assert first == {"outcome": "capped", "start": 233, "leftover": 223, "pity": 10,
+                         "guarantees": {"char": False, "weapon": False}}
         assert second["outcome"] in ("won", "ran_out") and second["start"] == 223
 
     def test_on_cap_stop_ends_the_plan(self):
@@ -484,7 +485,8 @@ class TestStepLimits:
         never_hit = {"base_rate": 0.0, "soft_pity_start": 200, "hard_pity": 300}
         *_, meta = simulate_combo_verbose(100, plan, start_char_pity=70, char_pity_config=never_hit,
                                           simulate_4star=False)
-        assert meta["phase_results"][0] == {"outcome": "capped", "start": 100, "leftover": 95, "pity": 75}
+        assert meta["phase_results"][0] == {"outcome": "capped", "start": 100, "leftover": 95, "pity": 75,
+                                            "guarantees": {"char": False, "weapon": False}}
 
     def test_capped_paths_feed_the_next_step(self):
         plan = [{"banner": "char", "copies": 1, "max_pulls": 80, "on_cap": "continue"},
@@ -494,6 +496,16 @@ class TestStepLimits:
         assert nodes[("capped",)]["count"] > 0 and nodes[("won",)]["count"] > 0
         # Both first-step outcomes go on to the weapon step.
         assert ("capped", "won") in nodes and ("won", "won") in nodes
+
+    def test_guarantees_are_tallied_for_both_banners_including_carried_ones(self):
+        # The character starts guaranteed and the plan never touches it, so
+        # every route ends with it still guaranteed; a weapon loss adds its own.
+        plan = [{"banner": "weapon", "copies": 1, "stop_on_loss": True}]
+        result = simulate_plan(233, plan, start_char_guarantee=True, trials=1000)
+        nodes = result["nodes"]
+        assert nodes[()]["guaranteed"] == {"char": 1.0, "weapon": 0.0}
+        assert nodes[("lost",)]["guaranteed"] == {"char": 1.0, "weapon": 1.0}
+        assert nodes[("won",)]["guaranteed"] == {"char": 1.0, "weapon": 0.0}
 
 
 class TestSkipOnLoss:
