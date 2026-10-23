@@ -21,6 +21,26 @@ from simulation import DUPE_WIN_REFUND_BONUS
 MAX_CHARACTER_COPIES = 7  # C0-C6, matches the frontend's strategy builder
 MAX_WEAPON_COPIES = 5     # W1-W5
 
+# Premium currency per pull, the standard across HoYoverse and Kuro games
+# (primogems, stellar jade, polychromes, astrite). It's an assumption for
+# any other game, so every conversion gets its own line showing this rate.
+CURRENCY_PER_PULL = 160
+
+# Where stated additional pulls come from, for each addition pill's
+# tooltip; the keys are the extraction schema's pull_additions sources.
+_ADDITION_SOURCES = {
+    "savings": "From currency or pulls you already have saved",
+    "patch": "From this patch's rewards (new story, quests, exploration)",
+    "event": "From event rewards (limited, login, or web events, or free pulls tied to a banner)",
+    "recurring": "From dailies, weeklies, or the free battle pass track",
+    "purchase": "Bought with real money (a top-up, monthly card, or paid battle pass)",
+    "endgame": "From endgame mode resets",
+    "exploration": "From exploration, chests, or achievements",
+    "codes": "From redeem codes or compensation",
+    "shop": "From an in-game shop exchange",
+    "other": "Additional pulls gained",
+}
+
 # A conditional plan ("pull the weapon first; if I win, go for the
 # character; if I lose, stop") is at most this many ordered steps, a
 # runaway guard against a misread question, the same idea as advisor.py's
@@ -88,6 +108,12 @@ TOOLTIPS = {
     "reserve_op": "Pulls set aside, not spent",
     "available": "Pulls actually available to spend after setting the reserve aside",
     "restated_total": "Total pulls as stated in your question, replacing the starting number",
+    "currency_amount": "Premium currency as stated in your question",
+    "divide_op": "Divided by the currency cost of one pull",
+    "currency_rate": (
+        f"Assumed cost of one pull: {CURRENCY_PER_PULL}, the standard in HoYoverse and Kuro games; if your "
+        f"game differs, give the advisor the pull count instead"
+    ),
     "route_leftover_won": "Average pulls left after this run, across the simulated runs that won it",
     "route_leftover_lost": "Average pulls kept after stopping here, across the simulated runs that lost this run",
     "route_factor": "This run's rate, from the line above",
@@ -170,6 +196,44 @@ def active_plan(extracted):
     here and keeps today's behavior."""
     plan = extracted.get("plan") or []
     return plan if any(step.get("on_loss") in ("stop", "skip") or _has_limit(step) for step in plan) else None
+
+
+def _pull_additions(additions):
+    """Validate the stated additions (one per source) and convert any
+    currency amount to whole pulls. Returns (additions, error), each
+    addition {"pulls", "source", "currency"}, currency being the stated
+    amount when it was given as currency rather than pulls (else None)."""
+    result = []
+    for addition in additions or []:
+        amount, unit, source = addition.get("amount"), addition.get("unit"), addition.get("source")
+        if not isinstance(amount, int) or amount <= 0:
+            return None, f"pull_additions: amount ({amount}) must be a positive integer"
+        if unit not in ("pulls", "currency"):
+            return None, f"pull_additions: unit must be 'pulls' or 'currency', got {unit}"
+        if source not in _ADDITION_SOURCES:
+            return None, f"pull_additions: source must be one of {', '.join(_ADDITION_SOURCES)}, got {source}"
+        pulls = amount // CURRENCY_PER_PULL if unit == "currency" else amount
+        result.append({"pulls": pulls, "source": source, "currency": amount if unit == "currency" else None})
+    return result, None
+
+
+def _currency_line(addition):
+    """One currency amount turned into pulls, shown as its own division so
+    the assumed rate is visible and easy to correct."""
+    whole, leftover = addition["pulls"], addition["currency"] % CURRENCY_PER_PULL
+    result_tooltip = "Whole pulls this currency buys"
+    if leftover:
+        result_tooltip += f", rounded down ({leftover} currency left over, short of another pull)"
+    return {
+        "label": "Currency Converted to Pulls",
+        "pills": [
+            _pill("number", addition["currency"], "cyan", "currency_amount"),
+            _pill("operator", "÷", "magenta", "divide_op"),
+            _pill("number", CURRENCY_PER_PULL, "cyan", "currency_rate"),
+            _pill("operator", "=", "magenta", "equals_op"),
+            {"kind": "result", "value": whole, "color": "light_green", "tooltip": result_tooltip},
+        ],
+    }
 
 
 def _skip_target(plan, index):
@@ -711,7 +775,7 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
     # in reserve"): no events, plan, or goal change, just a different pool
     # of pulls, which is still a deterministic, displayable fact.
     budget_only = not events and not plan and not goal_only and any(
-        extracted.get(key) for key in ("additional_pulls_stated", "total_pulls_restated", "reserve_pulls")
+        extracted.get(key) for key in ("pull_additions", "total_pulls_restated", "reserve_pulls")
     )
     if not events and not goal_only and not plan and not budget_only:
         return {"applies": True, "ok": False,
@@ -751,9 +815,10 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
         return {"applies": True, "ok": False,
                 "error": f"requested weapon copies ({desired_weapons}) exceed the max of {MAX_WEAPON_COPIES}"}
 
-    additional_pulls = extracted.get("additional_pulls_stated") or 0
-    if additional_pulls < 0:
-        return {"applies": True, "ok": False, "error": f"additional_pulls_stated ({additional_pulls}) cannot be negative"}
+    additions, error = _pull_additions(extracted.get("pull_additions"))
+    if error:
+        return {"applies": True, "ok": False, "error": error}
+    additional_pulls = sum(a["pulls"] for a in additions)
     reserve = extracted.get("reserve_pulls") or 0
     if reserve < 0:
         return {"applies": True, "ok": False, "error": f"reserve_pulls ({reserve}) cannot be negative"}
@@ -816,7 +881,7 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
                 f"pulls_remaining_stated ({stated}) does not reconcile with the events: "
                 f"{total_pulls_budget} starting pulls, {total_pulls_budget - pre_addition_remaining} net "
                 f"consumed across {len(events)} event(s), leaving {pre_addition_remaining}, "
-                f"plus additional_pulls_stated ({additional_pulls}) = {pre_addition_remaining + additional_pulls}"
+                f"plus pull_additions ({additional_pulls}) = {pre_addition_remaining + additional_pulls}"
             )}
 
     # pre_addition_remaining is authoritative from here on (it's either the
@@ -825,14 +890,28 @@ def reconcile(extracted, baseline_params, baseline_stats, prior=None):
     # there's no additional-pulls line to reassign it below.
     running_pulls = pre_addition_remaining
 
+    for addition in additions:
+        if addition["currency"] is not None:
+            lines.append(_currency_line(addition))
     if additional_pulls:
+        # One pill per stated source, each saying where it came from, so a
+        # "60 from the patch plus a 40-pull top-up" is summed here, in view,
+        # never by the model.
         post_addition = pre_addition_remaining + additional_pulls
+        addend_pills = []
+        for addition in additions:
+            addend_pills.append(_pill("operator", "+", "magenta", "add_op"))
+            addend_pills.append({
+                "kind": "number", "value": addition["pulls"], "color": "cyan",
+                "tooltip": _ADDITION_SOURCES[addition["source"]] + (
+                    ", converted from currency above" if addition["currency"] is not None
+                    else ", as stated in your question"),
+            })
         lines.append({
             "label": "Additional Pulls Mentioned",
             "pills": [
                 _pill("number", pre_addition_remaining, "cyan", "start_pulls"),
-                _pill("operator", "+", "magenta", "add_op"),
-                _pill("number", additional_pulls, "cyan", "refund"),
+                *addend_pills,
                 _pill("operator", "=", "magenta", "equals_op"),
                 _pill("result", post_addition, "light_green", "run_result"),
             ],

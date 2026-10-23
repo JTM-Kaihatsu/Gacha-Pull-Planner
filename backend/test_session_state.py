@@ -26,11 +26,16 @@ def _event(order, banner, outcome, pity, refunds, pity_is_absolute=True):
             "pity_at_outcome": pity, "refund_count": refunds, "pity_is_absolute": pity_is_absolute}
 
 
+def _add(amount, source="other", unit="pulls"):
+    """One pull_additions entry, as the extraction reports it."""
+    return {"amount": amount, "unit": unit, "source": source}
+
+
 def _blank(**overrides):
     base = {
         "has_event_sequence": True,
         "events": [],
-        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "pulls_remaining_stated": None, "pull_additions": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
@@ -60,7 +65,7 @@ def test_reproduces_the_original_bug_report_exactly():
         _event(1, "character", "win", 42, 11),
         _event(2, "weapon", "loss", 31, 3),
     ]
-    extracted = _blank(events=events, additional_pulls_stated=45, additional_character_copies_wanted=1)
+    extracted = _blank(events=events, pull_additions=[_add(45)], additional_character_copies_wanted=1)
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
 
     assert result["ok"] is True
@@ -487,7 +492,7 @@ class TestUnstatedPity:
 
     def test_additional_pulls_still_apply_on_top_of_stated_remaining(self):
         events = [_event(1, "character", "win", None, 0)]
-        extracted = _blank(events=events, pulls_remaining_stated=62, additional_pulls_stated=20)
+        extracted = _blank(events=events, pulls_remaining_stated=62, pull_additions=[_add(20)])
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         assert result["total_pulls"] == 82
@@ -904,7 +909,7 @@ class TestConditionalPlan:
         # lose, I would stop there. I'm expecting around 120 pulls."
         result = reconcile(_blank(
             events=[_event(1, "character", "loss", 30, None)],
-            additional_pulls_stated=120, plan=self.PLAN,
+            pull_additions=[_add(120)], plan=self.PLAN,
         ), self.PARAMS, self.STATS)
 
         assert result["ok"] and result["plan"]
@@ -992,7 +997,7 @@ class TestPlanLimits:
 
 class TestBudgetWhatIfs:
     def test_more_pulls_alone_reconciles_to_a_shown_total(self):
-        result = reconcile(_blank(additional_pulls_stated=20), BASELINE_PARAMS, BASELINE_STATS)
+        result = reconcile(_blank(pull_additions=[_add(20)]), BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] and result["budget_only"] and not result["goal_only"]
         assert _row(result["lines"][0]) == [100, "+", 20, "=", 120]
         assert result["total_pulls"] == 120
@@ -1005,7 +1010,7 @@ class TestBudgetWhatIfs:
 
     def test_a_reserve_is_set_aside_after_everything_else(self):
         result = reconcile(_blank(events=[_event(1, "character", "win", 30, 3)],
-                                  additional_pulls_stated=20, reserve_pulls=40),
+                                  pull_additions=[_add(20)], reserve_pulls=40),
                            BASELINE_PARAMS, BASELINE_STATS)
         assert not result["budget_only"]
         reserve_line = next(l for l in result["lines"] if l["label"] == "Pulls Kept in Reserve")
@@ -1178,3 +1183,52 @@ class TestSkipOnLoss:
             "CHARACTER GUARANTEE: TRUE", "WEAPON GUARANTEE: FALSE",
         ]
         assert switched["ending"] == "partial" and switched["end_guarantees"]["character"] == 1.0
+
+
+class TestPullAdditions:
+    """Pulls stated as additions, one entry per source, summed and
+    converted by code in view, each pill saying where it came from."""
+
+    @staticmethod
+    def _line(result, label):
+        return next(l for l in result["lines"] if l["label"] == label)
+
+    def test_an_addition_names_its_source_not_a_refund(self):
+        result = reconcile(_blank(pull_additions=[_add(120, "patch")]), BASELINE_PARAMS, BASELINE_STATS)
+        line = self._line(result, "Additional Pulls Mentioned")
+        assert _row(line) == [100, "+", 120, "=", 220]
+        assert line["pills"][2]["tooltip"] == (
+            "From this patch's rewards (new story, quests, exploration), as stated in your question")
+
+    def test_several_sources_are_summed_in_view(self):
+        # "About 60 from the patch, and I'll top up 40 more."
+        result = reconcile(_blank(pull_additions=[_add(60, "patch"), _add(40, "purchase")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        line = self._line(result, "Additional Pulls Mentioned")
+        assert _row(line) == [100, "+", 60, "+", 40, "=", 200]
+        assert line["pills"][4]["tooltip"].startswith("Bought with real money")
+        assert result["total_pulls"] == 200
+
+    def test_currency_converts_at_the_shown_rate(self):
+        result = reconcile(_blank(pull_additions=[_add(16000, "savings", "currency"), _add(20, "event")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        conversion = self._line(result, "Currency Converted to Pulls")
+        assert _row(conversion) == [16000, "÷", 160, "=", 100]
+        assert "Assumed cost of one pull: 160" in conversion["pills"][2]["tooltip"]
+        additions = self._line(result, "Additional Pulls Mentioned")
+        assert _row(additions) == [100, "+", 100, "+", 20, "=", 220]
+        assert additions["pills"][2]["tooltip"] == (
+            "From currency or pulls you already have saved, converted from currency above")
+
+    def test_currency_rounds_down_to_whole_pulls(self):
+        result = reconcile(_blank(pull_additions=[_add(1000, "purchase", "currency")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        conversion = self._line(result, "Currency Converted to Pulls")
+        assert _row(conversion) == [1000, "÷", 160, "=", 6]
+        assert "40 currency left over" in conversion["pills"][-1]["tooltip"]
+        assert result["total_pulls"] == 106
+
+    def test_an_unknown_source_or_bad_amount_returns_error(self):
+        for addition in (_add(20, "gift"), _add(0, "patch"), _add(20, "patch", "gems")):
+            result = reconcile(_blank(pull_additions=[addition]), BASELINE_PARAMS, BASELINE_STATS)
+            assert not result["ok"] and "pull_additions" in result["error"]
