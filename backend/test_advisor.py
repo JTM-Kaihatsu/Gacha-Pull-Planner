@@ -64,10 +64,15 @@ def _event(order, banner, outcome, pity, refunds):
             "pity_at_outcome": pity, "refund_count": refunds}
 
 
+def _add(amount, source="other", unit="pulls"):
+    """One pull_additions entry, as the extraction reports it."""
+    return {"amount": amount, "unit": unit, "source": source}
+
+
 def _no_sequence():
     return json.dumps({
         "has_event_sequence": False, "events": [],
-        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "pulls_remaining_stated": None, "pull_additions": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     })
@@ -76,7 +81,7 @@ def _no_sequence():
 def _extraction_response(**overrides):
     payload = {
         "has_event_sequence": True, "events": [],
-        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "pulls_remaining_stated": None, "pull_additions": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
@@ -88,7 +93,7 @@ def _scenario_fields(**overrides):
     """The top-level fields of a scenario (advisor.py's _SCENARIO_FIELDS),
     defaulted like a question that states nothing beyond its events."""
     base = {
-        "events": [], "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "events": [], "pulls_remaining_stated": None, "pull_additions": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
@@ -99,7 +104,7 @@ def _scenario_fields(**overrides):
 def _branch(label, assumed_events, **overrides):
     branch = {
         "condition_label": label, "assumed_events": assumed_events,
-        "pulls_remaining_stated": None, "additional_pulls_stated": None, "reserve_pulls": None,
+        "pulls_remaining_stated": None, "pull_additions": None, "reserve_pulls": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
         "characters_wanted_total": None, "weapons_wanted_total": None, "plan": None,
         "stops_pulling": False,
@@ -425,7 +430,7 @@ class TestSessionStateIntegration:
         tc = _tool_call("c1", "run_simulation", json.dumps({}))
         fake = _FakeClient([
             _extraction_response(
-                events=events, additional_pulls_stated=45, additional_character_copies_wanted=1,
+                events=events, pull_additions=[_add(45)], additional_character_copies_wanted=1,
             ),
             _response(_msg(content=None, tool_calls=[tc])),
             _response(_msg(content="With the extra pulls, both goals are within reach.")),
@@ -593,7 +598,7 @@ class TestScenariosFromExtraction:
     def test_branches_keep_only_their_own_assumed_outcomes(self):
         extracted = {
             "has_event_sequence": True, "plan": self.PLAN,
-            **_scenario_fields(events=[_event(1, "weapon", "loss", 40, 2)], additional_pulls_stated=120),
+            **_scenario_fields(events=[_event(1, "weapon", "loss", 40, 2)], pull_additions=[_add(120)]),
             "branches": [
                 _branch("If I win", [_event(1, "character", "win", 30, 3)]),
                 _branch("If I lose", [_event(1, "character", "loss", 75, 8)], plan=self.PLAN),
@@ -605,7 +610,7 @@ class TestScenariosFromExtraction:
         assert shared["events"] == [_event(1, "weapon", "loss", 40, 2)]
         assert [label for label, _ in branches] == ["If I win", "If I lose"]
         assert branches[0][1]["events"] == [_event(1, "character", "win", 30, 3)]
-        assert branches[0][1]["additional_pulls_stated"] is None
+        assert branches[0][1]["pull_additions"] is None
         assert branches[1][1]["plan"] == self.PLAN
 
     def test_branches_are_capped_at_max_scenarios(self):
@@ -1468,7 +1473,7 @@ class TestGoalOnlyHypotheticals:
         fake = _FakeClient([
             _response(_msg(content=json.dumps({
                 "has_event_sequence": False, "events": [],
-                "pulls_remaining_stated": None, "additional_pulls_stated": None,
+                "pulls_remaining_stated": None, "pull_additions": None,
                 "total_pulls_restated": None,
                 "additional_character_copies_wanted": 1, "additional_weapon_copies_wanted": None,
             }))),
@@ -1505,11 +1510,14 @@ class TestConditionalPlanRouting:
 
     def _fake_plan(self, **kwargs):
         self.plan_calls.append(kwargs)
-        node = lambda count, left: {"count": count, "avg_leftover": left}
+        node = lambda count, left, char=None, weapon=None: {
+            "count": count, "avg_leftover": left,
+            **({"guaranteed": {"char": char, "weapon": weapon}} if char is not None else {}),
+        }
         return {"trials": 4000, "nodes": {
             (): node(4000, kwargs["total_pulls"]),
-            ("won",): node(3000, 182.0), ("lost",): node(1000, 183.0),
-            ("won", "won"): node(3000, 128.0),
+            ("won",): node(3000, 182.0), ("lost",): node(1000, 183.0, 1.0, 1.0),
+            ("won", "won"): node(3000, 128.0, 0.0, 0.0),
         }, "leaves": {("won", "won"): 3000, ("lost",): 1000}}
 
     def _run(self, monkeypatch, extraction):
@@ -1524,7 +1532,7 @@ class TestConditionalPlanRouting:
     def test_events_then_plan_answer_as_routes(self, monkeypatch):
         fake, (answer, runs, breakdown) = self._run(monkeypatch, _extraction_response(
             events=[{**_event(1, "character", "loss", 30, None), "pity_is_absolute": True}],
-            additional_pulls_stated=120, plan=self.PLAN, reply_language="English",
+            pull_additions=[_add(120)], plan=self.PLAN, reply_language="English",
         ))
 
         assert answer == "Pull the weapon first."
@@ -1544,6 +1552,12 @@ class TestConditionalPlanRouting:
         prompt = fake.calls[-1]["messages"][-1]["content"]
         assert '"Route 1: Weapon won, then Character obtained": chance 75.00%' in prompt
         assert "keeping 183 pulls on average" in prompt
+        # Route 2 states BOTH guarantees it leaves, including the character
+        # one carried in from the earlier lost 50/50, not just the new one.
+        route2 = prompt.split('"Route 2:')[1]
+        assert ("the character banner's next 5-star IS guaranteed to be the featured one (carried over "
+                "from before this plan") in route2
+        assert "the weapon banner's next 5-star IS guaranteed to be the featured one (from this route's" in route2
         assert "(120, 30, 50)" in prompt
         # The model answers a question restated from the reconciled plan.
         assert prompt.endswith(
@@ -1571,7 +1585,7 @@ class TestBudgetOnlyWhatIfs:
             return _fake_sim(**kwargs)
 
         fake = _FakeClient([
-            _extraction_response(has_event_sequence=False, additional_pulls_stated=20, reply_language="English"),
+            _extraction_response(has_event_sequence=False, pull_additions=[_add(20)], reply_language="English"),
             _response(_msg(content="At 140 pulls you're at 80%.")),
         ])
         monkeypatch.setattr(advisor, "OpenAI", lambda **_: fake)
@@ -1616,8 +1630,10 @@ class TestStoppingBranch:
         # The goal change reported alongside stopping is ignored, not "0 of 0".
         assert [l["label"] for l in stop_group["lines"]] == ["Character Run 1 (obtained 0 of 1)", "Stops Here"]
         assert [p["value"] for p in stop_group["lines"][-1]["pills"]] == [
-            "53 KEPT", "CHARACTER", "GUARANTEE: TRUE", "WEAPON", "GUARANTEE: FALSE",
+            "53 KEPT", "CHARACTER", "0 pity", "GUARANTEE: TRUE", "WEAPON", "0 pity", "GUARANTEE: FALSE",
         ]
+        assert stop_group["lines"][-1]["pills"][3]["tooltip"].startswith(
+            "Guaranteed: Character Run 1 above lost its 50/50")
         # Only the branch that keeps pulling was simulated: 120 - 30 + 3 = 93.
         assert seen == [93]
         assert "chooses to stop pulling here, keeping 53 pulls" in fake.calls[-1]["messages"][-1]["content"]

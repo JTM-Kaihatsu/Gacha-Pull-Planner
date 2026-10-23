@@ -26,11 +26,16 @@ def _event(order, banner, outcome, pity, refunds, pity_is_absolute=True):
             "pity_at_outcome": pity, "refund_count": refunds, "pity_is_absolute": pity_is_absolute}
 
 
+def _add(amount, source="other", unit="pulls"):
+    """One pull_additions entry, as the extraction reports it."""
+    return {"amount": amount, "unit": unit, "source": source}
+
+
 def _blank(**overrides):
     base = {
         "has_event_sequence": True,
         "events": [],
-        "pulls_remaining_stated": None, "additional_pulls_stated": None,
+        "pulls_remaining_stated": None, "pull_additions": None,
         "total_pulls_restated": None,
         "additional_character_copies_wanted": None, "additional_weapon_copies_wanted": None,
     }
@@ -60,7 +65,7 @@ def test_reproduces_the_original_bug_report_exactly():
         _event(1, "character", "win", 42, 11),
         _event(2, "weapon", "loss", 31, 3),
     ]
-    extracted = _blank(events=events, additional_pulls_stated=45, additional_character_copies_wanted=1)
+    extracted = _blank(events=events, pull_additions=[_add(45)], additional_character_copies_wanted=1)
     result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
 
     assert result["ok"] is True
@@ -487,7 +492,7 @@ class TestUnstatedPity:
 
     def test_additional_pulls_still_apply_on_top_of_stated_remaining(self):
         events = [_event(1, "character", "win", None, 0)]
-        extracted = _blank(events=events, pulls_remaining_stated=62, additional_pulls_stated=20)
+        extracted = _blank(events=events, pulls_remaining_stated=62, pull_additions=[_add(20)])
         result = reconcile(extracted, BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] is True
         assert result["total_pulls"] == 82
@@ -904,7 +909,7 @@ class TestConditionalPlan:
         # lose, I would stop there. I'm expecting around 120 pulls."
         result = reconcile(_blank(
             events=[_event(1, "character", "loss", 30, None)],
-            additional_pulls_stated=120, plan=self.PLAN,
+            pull_additions=[_add(120)], plan=self.PLAN,
         ), self.PARAMS, self.STATS)
 
         assert result["ok"] and result["plan"]
@@ -913,7 +918,12 @@ class TestConditionalPlan:
                           "Starting Point for Every Route", "Current Goal"]
         assert _row(result["lines"][0]) == [140, "−", 30, "+", 3, "=", 113, "LOSS"]
         assert _row(result["lines"][1]) == [113, "+", 120, "=", 233]
-        assert _row(result["lines"][2]) == [233, "CHARACTER", "GUARANTEE: TRUE", "WEAPON", "GUARANTEE: FALSE"]
+        assert _row(result["lines"][2]) == [233, "CHARACTER", "0 pity", "GUARANTEE: TRUE",
+                                            "WEAPON", "0 pity", "GUARANTEE: FALSE"]
+        # Each guarantee says where it came from.
+        char_flag, weapon_flag = result["lines"][2]["pills"][3], result["lines"][2]["pills"][6]
+        assert char_flag["tooltip"].startswith("Guaranteed: Character Run 1 above lost its 50/50")
+        assert weapon_flag["tooltip"] == "Carried over unchanged from the Starting Situation"
         assert _row(result["lines"][3]) == ["1 character and 1 weapon"]
         assert result["total_pulls"] == 233
         assert result["start_char_guarantee"] is True
@@ -987,7 +997,7 @@ class TestPlanLimits:
 
 class TestBudgetWhatIfs:
     def test_more_pulls_alone_reconciles_to_a_shown_total(self):
-        result = reconcile(_blank(additional_pulls_stated=20), BASELINE_PARAMS, BASELINE_STATS)
+        result = reconcile(_blank(pull_additions=[_add(20)]), BASELINE_PARAMS, BASELINE_STATS)
         assert result["ok"] and result["budget_only"] and not result["goal_only"]
         assert _row(result["lines"][0]) == [100, "+", 20, "=", 120]
         assert result["total_pulls"] == 120
@@ -1000,7 +1010,7 @@ class TestBudgetWhatIfs:
 
     def test_a_reserve_is_set_aside_after_everything_else(self):
         result = reconcile(_blank(events=[_event(1, "character", "win", 30, 3)],
-                                  additional_pulls_stated=20, reserve_pulls=40),
+                                  pull_additions=[_add(20)], reserve_pulls=40),
                            BASELINE_PARAMS, BASELINE_STATS)
         assert not result["budget_only"]
         reserve_line = next(l for l in result["lines"] if l["label"] == "Pulls Kept in Reserve")
@@ -1025,11 +1035,16 @@ class TestBuildRouteGroups:
         return {"trials": trials, "nodes": built, "leaves": leaves}
 
     def test_win_route_multiplies_and_loss_route_keeps_pulls(self):
-        routes, omitted = build_route_groups(self.STRATEGY, self._result(
+        result = self._result(
             {("won",): (3000, 182.4), ("lost",): (1000, 183.1),
              ("won", "won"): (2970, 128.6), ("won", "ran_out"): (30, 0.2)},
             {("won", "won"): 2970, ("lost",): 1000, ("won", "ran_out"): 30},
-        ))
+        )
+        # The character started guaranteed (an earlier lost 50/50): the win
+        # route uses it up, the loss route never touches it.
+        result["nodes"][("won", "won")]["guaranteed"] = {"char": 0.0, "weapon": 0.0}
+        result["nodes"][("lost",)]["guaranteed"] = {"char": 1.0, "weapon": 1.0}
+        routes, omitted = build_route_groups(self.STRATEGY, result)
         assert omitted is None
         assert [r["label"] for r in routes] == [
             "Route 1: Weapon won, then Character obtained",
@@ -1039,14 +1054,23 @@ class TestBuildRouteGroups:
         assert [_row(l) for l in win["lines"]] == [
             [233, "WIN 75.00%", "182 LEFT"],
             [182, "WIN 99.00%", "RAN OUT 1.00%", "129 LEFT"],
-            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT", "OBTAINED: 1 CHARACTER AND 1 WEAPON"],
+            ["75.00%", "×", "99.00%", "=", "74.25%", "129 LEFT", "OBTAINED: 1 CHARACTER AND 1 WEAPON",
+             "CHARACTER GUARANTEE: FALSE", "WEAPON GUARANTEE: FALSE"],
         ]
         assert win["chance"] == 74.25 and win["ending"] == "complete"
         assert [_row(l) for l in loss["lines"]] == [
             [233, "LOSS 25.00%", "183 KEPT"],
-            ["25.00%", "183 KEPT", "OBTAINED: NONE", "WEAPON GUARANTEE: TRUE"],
+            ["25.00%", "183 KEPT", "OBTAINED: NONE", "CHARACTER GUARANTEE: TRUE", "WEAPON GUARANTEE: TRUE"],
         ]
         assert loss["chance"] == 25.0 and loss["ending"] == "lost" and loss["stopped_banner"] == "weapon"
+        assert loss["end_guarantees"] == {"character": 1.0, "weapon": 1.0}
+        assert loss["pulled_banners"] == ["weapon"]
+
+    def test_a_mixed_guarantee_shows_its_share_of_runs(self):
+        result = self._result({("won",): (4000, 180), ("won", "won"): (4000, 120)}, {("won", "won"): 4000})
+        result["nodes"][("won", "won")]["guaranteed"] = {"char": 0.37, "weapon": 0.0}
+        routes, _ = build_route_groups(self.STRATEGY, result)
+        assert _row(routes[0]["lines"][-1])[-2:] == ["CHARACTER GUARANTEE: 37% OF RUNS", "WEAPON GUARANTEE: FALSE"]
 
     def test_a_capped_step_branches_into_its_own_route(self):
         strategy = [{"banner": "char", "copies": 1, "max_pulls": 80, "on_cap": "continue"},
@@ -1140,6 +1164,7 @@ class TestSkipOnLoss:
             ("switched", "skipped", "won"): (2000, 142),
         }.items():
             built[path] = {"count": count, "avg_leftover": left}
+        built[("switched", "skipped", "won")]["guaranteed"] = {"char": 1.0, "weapon": 0.0}
         routes, _ = build_route_groups(self.STRATEGY, {
             "trials": 4000, "nodes": built,
             "leaves": {("won", "won", "won"): 2000, ("switched", "skipped", "won"): 2000},
@@ -1154,8 +1179,56 @@ class TestSkipOnLoss:
         ]
         assert _row(switched["lines"][0]) == [260, "LOSS 50.00%", "205 LEFT"]
         assert _row(switched["lines"][-1]) == [
-            "50.00%", "×", "100.00%", "=", "50.00%", "142 LEFT", "OBTAINED: 1 WEAPON", "CHARACTER GUARANTEE: TRUE",
+            "50.00%", "×", "100.00%", "=", "50.00%", "142 LEFT", "OBTAINED: 1 WEAPON",
+            "CHARACTER GUARANTEE: TRUE", "WEAPON GUARANTEE: FALSE",
         ]
-        assert switched["ending"] == "partial" and switched["guaranteed_banners"] == ["character"]
-        # The win route pulled the character again, so it keeps no guarantee.
-        assert routes[0]["guaranteed_banners"] == []
+        assert switched["ending"] == "partial" and switched["end_guarantees"]["character"] == 1.0
+
+
+class TestPullAdditions:
+    """Pulls stated as additions, one entry per source, summed and
+    converted by code in view, each pill saying where it came from."""
+
+    @staticmethod
+    def _line(result, label):
+        return next(l for l in result["lines"] if l["label"] == label)
+
+    def test_an_addition_names_its_source_not_a_refund(self):
+        result = reconcile(_blank(pull_additions=[_add(120, "patch")]), BASELINE_PARAMS, BASELINE_STATS)
+        line = self._line(result, "Additional Pulls Mentioned")
+        assert _row(line) == [100, "+", 120, "=", 220]
+        assert line["pills"][2]["tooltip"] == (
+            "From this patch's rewards (new story, quests, exploration), as stated in your question")
+
+    def test_several_sources_are_summed_in_view(self):
+        # "About 60 from the patch, and I'll top up 40 more."
+        result = reconcile(_blank(pull_additions=[_add(60, "patch"), _add(40, "purchase")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        line = self._line(result, "Additional Pulls Mentioned")
+        assert _row(line) == [100, "+", 60, "+", 40, "=", 200]
+        assert line["pills"][4]["tooltip"].startswith("Bought with real money")
+        assert result["total_pulls"] == 200
+
+    def test_currency_converts_at_the_shown_rate(self):
+        result = reconcile(_blank(pull_additions=[_add(16000, "savings", "currency"), _add(20, "event")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        conversion = self._line(result, "Currency Converted to Pulls")
+        assert _row(conversion) == [16000, "÷", 160, "=", 100]
+        assert "Assumed cost of one pull: 160" in conversion["pills"][2]["tooltip"]
+        additions = self._line(result, "Additional Pulls Mentioned")
+        assert _row(additions) == [100, "+", 100, "+", 20, "=", 220]
+        assert additions["pills"][2]["tooltip"] == (
+            "From currency or pulls you already have saved, converted from currency above")
+
+    def test_currency_rounds_down_to_whole_pulls(self):
+        result = reconcile(_blank(pull_additions=[_add(1000, "purchase", "currency")]),
+                           BASELINE_PARAMS, BASELINE_STATS)
+        conversion = self._line(result, "Currency Converted to Pulls")
+        assert _row(conversion) == [1000, "÷", 160, "=", 6]
+        assert "40 currency left over" in conversion["pills"][-1]["tooltip"]
+        assert result["total_pulls"] == 106
+
+    def test_an_unknown_source_or_bad_amount_returns_error(self):
+        for addition in (_add(20, "gift"), _add(0, "patch"), _add(20, "patch", "gems")):
+            result = reconcile(_blank(pull_additions=[addition]), BASELINE_PARAMS, BASELINE_STATS)
+            assert not result["ok"] and "pull_additions" in result["error"]

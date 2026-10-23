@@ -114,11 +114,46 @@ _SCENARIO_FIELDS = {
     },
     "pulls_remaining_stated": {
         "type": ["integer", "null"],
-        "description": "A direct, total restatement of pulls remaining, ONLY when the question's own words state a specific leftover pull count as fact (e.g. 'I have 41 pulls left', 'I'm down to 23'). Never compute this yourself by subtracting a pity count (or anything else) from the total pulls; a question that only gives an event's pity and outcome, with no separate remaining-pulls statement, must leave this null, the true remaining total is computed deterministically from the events instead. Do not use this field for an amount meant to be added on top of the remaining pulls; use additional_pulls_stated for that instead.",
+        "description": "A direct, total restatement of pulls remaining, ONLY when the question's own words state a specific leftover pull count as fact (e.g. 'I have 41 pulls left', 'I'm down to 23'). Never compute this yourself by subtracting a pity count (or anything else) from the total pulls; a question that only gives an event's pity and outcome, with no separate remaining-pulls statement, must leave this null, the true remaining total is computed deterministically from the events instead. Do not use this field for an amount meant to be added on top of the remaining pulls; use pull_additions for that instead.",
     },
-    "additional_pulls_stated": {
-        "type": ["integer", "null"],
-        "description": "An amount of pulls stated as an ADDITION on top of whatever remains, not a total (e.g. 'plus around 45 more from this patch', 'and I'll get another 20 next week'). Report the raw number only; do not add it to anything yourself.",
+    "pull_additions": {
+        "type": ["array", "null"],
+        "description": (
+            "Pulls stated as an ADDITION on top of whatever remains, not a total, ONE ENTRY PER SOURCE "
+            "mentioned (e.g. 'about 60 from this patch and I'll top up 40 more' is two entries). Report "
+            "each raw amount exactly as stated; never add them together or convert currency yourself, "
+            "code does both. Null if none."
+        ),
+        "items": {
+            "type": "object",
+            "properties": {
+                "amount": {"type": "integer", "description": "The number exactly as stated."},
+                "unit": {
+                    "type": "string", "enum": ["pulls", "currency"],
+                    "description": "'pulls' for a pull or wish count ('40 pulls', '4 ten-pulls' is 40). 'currency' for premium currency instead of pulls ('16,000 primogems', '8000 stellar jade', '3200 polychromes').",
+                },
+                "source": {
+                    "type": "string",
+                    "enum": ["savings", "patch", "event", "recurring", "purchase", "endgame", "exploration",
+                             "codes", "shop", "other"],
+                    "description": (
+                        "Where the pulls come from: 'savings' (currency or pulls the player already has "
+                        "saved up but hasn't counted yet, e.g. 'I have 16,000 primogems saved'), 'patch' (a "
+                        "patch or version's rewards, new story, "
+                        "quests), 'event' (limited events, login events, web events, free pulls tied to a "
+                        "banner), 'recurring' (dailies, commissions, weeklies, the free battle pass track), "
+                        "'purchase' (top-ups, buying currency, a monthly card or welkin, a paid battle pass), "
+                        "'endgame' (Spiral Abyss, Memory of Chaos, Shiyu Defense and other endgame resets), "
+                        "'exploration' (exploration, chests, achievements, one-off quests), 'codes' "
+                        "(livestream or redeem codes, maintenance compensation), 'shop' (starglitter, "
+                        "embers or other in-game shop exchanges), 'other' (unspecified, e.g. 'I'll have "
+                        "about 50 more')."
+                    ),
+                },
+            },
+            "required": ["amount", "unit", "source"],
+            "additionalProperties": False,
+        },
     },
     "total_pulls_restated": {"type": ["integer", "null"]},
     "reserve_pulls": {
@@ -214,7 +249,7 @@ BRANCH_SCHEMA = {
             "items": EVENT_SCHEMA,
         },
         "pulls_remaining_stated": _SCENARIO_FIELDS["pulls_remaining_stated"],
-        "additional_pulls_stated": _SCENARIO_FIELDS["additional_pulls_stated"],
+        "pull_additions": _SCENARIO_FIELDS["pull_additions"],
         "reserve_pulls": _SCENARIO_FIELDS["reserve_pulls"],
         "additional_character_copies_wanted": _SCENARIO_FIELDS["additional_character_copies_wanted"],
         "additional_weapon_copies_wanted": _SCENARIO_FIELDS["additional_weapon_copies_wanted"],
@@ -227,7 +262,7 @@ BRANCH_SCHEMA = {
         },
     },
     "required": [
-        "condition_label", "assumed_events", "pulls_remaining_stated", "additional_pulls_stated",
+        "condition_label", "assumed_events", "pulls_remaining_stated", "pull_additions",
         "reserve_pulls", "additional_character_copies_wanted", "additional_weapon_copies_wanted",
         "characters_wanted_total", "weapons_wanted_total", "plan", "stops_pulling",
     ],
@@ -351,8 +386,11 @@ EXTRACTION_SYSTEM_PROMPT = (
     "that explicitly changes or replaces the goal to a stated total uses characters_wanted_total / "
     "weapons_wanted_total. Also report, only if explicitly stated: a direct restatement of pulls "
     "remaining (pulls_remaining_stated, required whenever any event's pity is null), "
-    "an amount to add on top of whatever remains, not a total "
-    "(additional_pulls_stated), a restated total pull budget (total_pulls_restated), "
+    "amounts to add on top of whatever remains, not a total, one entry per source (pull_additions: "
+    "savings not yet counted, a patch's rewards, events, dailies or the battle pass, purchases or top-ups, endgame resets, "
+    "exploration or achievements, codes or compensation, shop exchanges, or unspecified; currency "
+    "amounts like '16,000 primogems' are reported as stated with unit 'currency', never converted), "
+    "a restated total pull budget (total_pulls_restated), "
     "and any signed change to the copies wanted for a banner "
     "(additional_character_copies_wanted / additional_weapon_copies_wanted): positive to "
     "add copies beyond the original goal, negative to reduce the goal below its original "
@@ -369,7 +407,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "fields and is reported exactly once there, never repeated inside a branch: anything that already "
     "happened (e.g. 'I already lost the weapon 50/50 at 40 pity') is a top-level event, and pulls "
     "expected regardless of the outcome (e.g. 'I'm getting 120 pulls this patch') are a top-level "
-    "additional_pulls_stated. Each branch continues from the top-level state; branches are "
+    "pull_additions entry. Each branch continues from the top-level state; branches are "
     "alternatives to each other, never continuations of one another. A branch can hold a plan of "
     "its own, e.g. 'if I win the character at 30 pity, I'll pull the weapon and stop if I lose it', and a "
     "branch that ends pulling right after its assumed outcome ('if I lose it at 75, I'll just stop there') "
@@ -383,7 +421,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "planned step is never known yet, the simulation decides it, so never report a planned "
     "step as an event; anything that already happened (e.g. 'I lost the 50/50 at 30 pity') "
     "is still an event as usual, and pulls expected to be gained (e.g. 'this patch will give "
-    "me around 120 pulls') are still additional_pulls_stated. A step can also end at a stated "
+    "me around 120 pulls') are still pull_additions. A step can also end at a stated "
     "limit instead: 'spend at most 80 pulls on the character, then switch to the weapon' is "
     "max_pulls 80 with on_cap 'continue' on the character step; 'I'll pull up to 75 pity, then stop' "
     "is stop_at_pity 75 with on_cap 'stop'. A loss can also move the plan on rather than stop it: 'if I "
@@ -394,7 +432,7 @@ EXTRACTION_SYSTEM_PROMPT = (
     "is a plan step like these. plan is null for every question without a stop, a skip, or a "
     "limit. Pulls to keep aside and never spend ('keep 40 for the next banner') are "
     "reserve_pulls, with or without a plan. A pure budget what-if with no events, such as 'what if "
-    "I had 20 more pulls' (additional_pulls_stated 20) or 'what if I had 200 pulls' "
+    "I had 20 more pulls' (a pull_additions entry of 20) or 'what if I had 200 pulls' "
     "(total_pulls_restated 200), is still reported through those fields even though "
     "has_event_sequence is false. If (and only if) the context "
     "below includes a prior clarifying question and the user's answer to it, apply that "
@@ -831,7 +869,7 @@ def _has_goal_change(extracted):
     return any(extracted.get(key) for key in _GOAL_CHANGE_FIELDS)
 
 
-_BUDGET_CHANGE_FIELDS = ("additional_pulls_stated", "total_pulls_restated", "reserve_pulls")
+_BUDGET_CHANGE_FIELDS = ("pull_additions", "total_pulls_restated", "reserve_pulls")
 
 
 def _extraction_applies(extracted):
@@ -850,7 +888,7 @@ _BRANCH_LETTERS = "ABCD"
 # BRANCH_SCHEMA; everything else (a restated total, starting corrections)
 # is only ever top-level.
 _BRANCH_FIELDS = (
-    "pulls_remaining_stated", "additional_pulls_stated", "reserve_pulls",
+    "pulls_remaining_stated", "pull_additions", "reserve_pulls",
     "additional_character_copies_wanted", "additional_weapon_copies_wanted",
     "characters_wanted_total", "weapons_wanted_total",
 )
@@ -901,7 +939,8 @@ def _continue_from(state, baseline_params, baseline_stats, from_shared):
     }
     stats = {**baseline_stats, "desired_characters": state["desired_characters"],
              "desired_weapons": state["desired_weapons"]}
-    prior = {"runs": state["runs"], "obtained": state["obtained"]}
+    prior = {"runs": state["runs"], "obtained": state["obtained"],
+             "guarantee_sources": state.get("guarantee_sources")}
     if from_shared:
         prior["budget_source"] = "the events shared by every scenario above leave only"
     return params, stats, prior
@@ -1244,9 +1283,8 @@ def _simulate_routes(baseline_params, scenario):
         leftover = round(route["avg_leftover"])
         if route["ending"] == "lost":
             ending = (
-                f"The plan stops here, keeping {leftover} pulls on average, and the next 5-star on "
-                f"the {route['stopped_banner']} banner is now guaranteed to be the featured one (not just "
-                f"any 5-star) whenever they pull on it again."
+                f"The plan stops here after losing the {route['stopped_banner']} 5-star, keeping {leftover} "
+                f"pulls on average."
             )
         elif route["ending"] == "capped_stop":
             ending = (
@@ -1261,18 +1299,33 @@ def _simulate_routes(baseline_params, scenario):
             )
         else:
             ending = f"Every step is obtained, with {leftover} pulls left on average."
-        for banner in route["guaranteed_banners"]:
-            if banner != route["stopped_banner"]:
-                ending += (
-                    f" Losing on the {banner} banner leaves its next 5-star guaranteed to be the featured "
-                    f"one, whenever they pull there again."
-                )
+        # Every banner's guarantee where this route ends, not just one the
+        # route's own loss created: a guarantee carried in from before the
+        # plan (e.g. an earlier lost 50/50) was going unmentioned otherwise.
+        guarantee_bits = []
+        for banner, share in route["end_guarantees"].items():
+            source = (
+                "carried over from before this plan, since this route never pulls on it"
+                if banner not in route["pulled_banners"] else "from this route's own pulls"
+            )
+            if share >= 1:
+                guarantee_bits.append(
+                    f"the {banner} banner's next 5-star IS guaranteed to be the featured one ({source})")
+            elif share <= 0:
+                guarantee_bits.append(f"the {banner} banner has no guarantee (its next 5-star is a "
+                                      f"{'50/50' if banner == 'character' else '75/25'})")
+            else:
+                guarantee_bits.append(f"the {banner} banner ends guaranteed in {round(share * 100)}% of these runs")
+        if guarantee_bits:
+            ending += (
+                f" Where this route leaves the player: {'; '.join(guarantee_bits)}. Mention every guarantee "
+                f"this route leaves, not only the one a loss here created."
+            )
         for banner, pity in route["capped_pity"]:
             cfg = baseline_params["char_pity_config" if banner == "character" else "weapon_pity_config"]
             ending += (
                 f" Stopping at the limit keeps about {pity} pity on the {banner} banner, which carries over "
-                f"to their next pulls there. Unlike a loss, it leaves NO guarantee: the next 5-star on the "
-                f"{banner} banner is still a {'50/50' if banner == 'character' else '75/25'}."
+                f"to their next pulls there. Unlike a loss, hitting a limit creates no guarantee by itself."
             )
             # The most useful thing to say about a limit is often where it
             # falls on the pity curve, which the model doesn't reliably
@@ -1315,9 +1368,10 @@ def _pull_arithmetic_guard(question, lines, total):
     for line in lines:
         if line["label"] in ("Additional Pulls Mentioned", "Pulls Kept in Reserve"):
             pills = line["pills"]
+            amounts = " and ".join(str(p["value"]) for p in pills[1:-2] if p["kind"] != "operator")
             what = "additional pulls the question mentions are" if pills[1]["value"] == "+" else "pulls kept in reserve are"
             guard += (
-                f" The {pills[2]['value']} {what} already accounted for: {_lines_to_text([line]).split(': ', 1)[1]}. "
+                f" The {amounts} {what} already accounted for: {_lines_to_text([line]).split(': ', 1)[1]}. "
                 f"No simulation without them was run, so do not comment on how they change the odds."
             )
     return guard
