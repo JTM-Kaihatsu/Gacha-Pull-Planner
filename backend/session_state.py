@@ -34,7 +34,7 @@ _ADDITION_SOURCES = {
     "event": "From event rewards (limited, login, or web events, or free pulls tied to a banner)",
     "recurring": "From dailies, weeklies, or the free battle pass track",
     "purchase": "Bought with real money (a top-up, monthly card, or paid battle pass)",
-    "endgame": "From endgame mode resets",
+    "endgame": "From endgame rewards or mode resets",
     "exploration": "From exploration, chests, or achievements",
     "codes": "From redeem codes or compensation",
     "shop": "From an in-game shop exchange",
