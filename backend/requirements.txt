@@ -6,3 +6,6 @@ pandas
 python-dotenv
 pytest
 httpx
+# eMudhra intermediate CA compromise (Oct 2026): httpx and openai verify TLS
+# against certifi's own bundle, not the system store, so pin a patched one.
+certifi>=2026.10.19
